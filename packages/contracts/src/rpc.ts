@@ -84,6 +84,8 @@ import {
   OrchestrationEvent,
   OrchestrationImportThreadInput,
   OrchestrationImportThreadResult,
+  OrchestrationResyncExternalThreadInput,
+  OrchestrationResyncExternalThreadResult,
   OrchestrationRpcSchemas,
   OrchestrationShellStreamItem,
   OrchestrationThreadStreamItem,
@@ -211,6 +213,51 @@ export const WsOrchestrationImportThreadRpc = Rpc.make(ORCHESTRATION_WS_METHODS.
   success: OrchestrationImportThreadResult,
   error: WsRpcError,
 });
+
+export const WsOrchestrationListExternalSessionsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listExternalSessions,
+  {
+    payload: OrchestrationRpcSchemas.listExternalSessions.input,
+    success: OrchestrationRpcSchemas.listExternalSessions.output,
+    error: WsRpcError,
+  },
+);
+
+export const WsOrchestrationPreviewExternalSessionRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.previewExternalSession,
+  {
+    payload: OrchestrationRpcSchemas.previewExternalSession.input,
+    success: OrchestrationRpcSchemas.previewExternalSession.output,
+    error: WsRpcError,
+  },
+);
+
+export const WsOrchestrationImportExternalThreadsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.importExternalThreads,
+  {
+    payload: OrchestrationRpcSchemas.importExternalThreads.input,
+    success: OrchestrationRpcSchemas.importExternalThreads.output,
+    error: WsRpcError,
+  },
+);
+
+export const WsOrchestrationGetThreadExternalSessionRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getThreadExternalSession,
+  {
+    payload: OrchestrationRpcSchemas.getThreadExternalSession.input,
+    success: OrchestrationRpcSchemas.getThreadExternalSession.output,
+    error: WsRpcError,
+  },
+);
+
+export const WsOrchestrationResyncExternalThreadRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.resyncExternalThread,
+  {
+    payload: OrchestrationResyncExternalThreadInput,
+    success: OrchestrationResyncExternalThreadResult,
+    error: WsRpcError,
+  },
+);
 
 export const WsOrchestrationGetSnapshotRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getSnapshot, {
   payload: OrchestrationRpcSchemas.getSnapshot.input,
@@ -907,6 +954,11 @@ export const WsBootstrapRpcGroup = RpcGroup.make(WsBootstrapNegotiateRpc);
 export const WsFeatureRpcGroup = RpcGroup.make(
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationImportThreadRpc,
+  WsOrchestrationListExternalSessionsRpc,
+  WsOrchestrationPreviewExternalSessionRpc,
+  WsOrchestrationImportExternalThreadsRpc,
+  WsOrchestrationGetThreadExternalSessionRpc,
+  WsOrchestrationResyncExternalThreadRpc,
   WsOrchestrationGetSnapshotRpc,
   WsOrchestrationGetShellSnapshotRpc,
   WsOrchestrationRepairStateRpc,

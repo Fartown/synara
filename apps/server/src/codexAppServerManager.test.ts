@@ -1754,7 +1754,7 @@ describe("CodexAppServerManager discovery", () => {
       threadId: "thread_missing",
     });
 
-    expect(getOrCreateDiscoverySession).toHaveBeenCalledWith("/repo-b");
+    expect(getOrCreateDiscoverySession).toHaveBeenCalledWith("/repo-b", undefined);
     expect(sendRequest).toHaveBeenCalledWith(discoveryContext, "skills/list", {
       cwds: ["/repo-b"],
     });

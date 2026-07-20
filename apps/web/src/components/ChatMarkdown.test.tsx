@@ -326,4 +326,19 @@ describe("ChatMarkdown user variant", () => {
     expect(markup).toContain("chat-markdown-codeblock");
     expect(markup).toContain("const value = 1;");
   });
+
+  it("caps local images as chat thumbnails by default and offers the full document variant", async () => {
+    const { default: ChatMarkdown } = await import("./ChatMarkdown");
+    const { renderToStaticMarkup: render } = await import("react-dom/server");
+    const text = "![整页地图](./images/map.png)";
+
+    const thumbnail = render(<ChatMarkdown text={text} cwd="/repo" isStreaming={false} />);
+    expect(thumbnail).toContain("chat-generated-image");
+    expect(thumbnail).not.toContain("chat-generated-image--full");
+
+    const full = render(
+      <ChatMarkdown text={text} cwd="/repo" isStreaming={false} imageVariant="full" />,
+    );
+    expect(full).toContain("chat-generated-image--full");
+  });
 });

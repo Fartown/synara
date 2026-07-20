@@ -75,6 +75,8 @@ import {
   type AutomationListResult,
   MAX_PINNED_PROJECTS,
   type DesktopUpdateState,
+  type OrchestrationExternalSession,
+  type OrchestrationImportExternalThreadsResult,
   type OrchestrationShellSnapshot,
   PROVIDER_DISPLAY_NAMES,
   ProjectId,
@@ -174,7 +176,12 @@ import { useLatestProjectStore } from "../latestProjectStore";
 import { resolveThreadEnvironmentPresentation } from "../lib/threadEnvironment";
 import { dispatchThreadRename } from "../lib/threadRename";
 import { quotePosixShellArgument } from "../lib/shellQuote";
-import { DEFAULT_THREAD_TERMINAL_ID, type SidebarThreadSummary, type Thread } from "../types";
+import {
+  DEFAULT_THREAD_TERMINAL_ID,
+  type Project,
+  type SidebarThreadSummary,
+  type Thread,
+} from "../types";
 import {
   applyAutomationEvent,
   automationAttentionCount,
@@ -202,6 +209,7 @@ import {
   createThreadHoverCardAnchor,
 } from "./sidebarHoverCardAnchors";
 import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from "./ui/preview-card";
+import { SidebarDiscoveredSessions } from "./SidebarDiscoveredSessions";
 import { SidebarIconButton } from "./SidebarIconButton";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
 import { SidebarMetaChipStack } from "./SidebarMetaChip";
@@ -219,6 +227,7 @@ import {
   type SidebarSearchPaletteMode,
 } from "./SidebarSearchPalette";
 import { useHandleNewChat } from "../hooks/useHandleNewChat";
+import { useImportExternalSession } from "../hooks/useImportExternalSession";
 import { useHandleNewStudioChat } from "../hooks/useHandleNewStudioChat";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useThreadHandoff } from "../hooks/useThreadHandoff";
@@ -299,10 +308,12 @@ import {
   createSidebarThreadHoverAnchorId,
   findDeepestWorkspaceRootMatch,
   findWorkspaceRootMatch,
+  filterSidebarThreadsByTitle,
   getFallbackThreadIdAfterDelete,
   getPinnedThreadsForSidebar,
   getUnpinnedThreadsForSidebar,
   orderPinnedProjectsForSidebar,
+  pruneEmptySidebarGroups,
   pullRequestRepositoryConfigFingerprint,
   getNextVisibleSidebarThreadId,
   getSidebarThreadIdsToPrewarm,
@@ -407,6 +418,7 @@ const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
 };
 const SIDEBAR_THREAD_SORT_LABELS: Record<SidebarThreadSortOrder, string> = {
   updated_at: "Last user message",
+  last_reply: "Last reply",
   created_at: "Created at",
 };
 const SIDEBAR_LIST_ANIMATION_OPTIONS = {
@@ -1692,6 +1704,23 @@ export default function Sidebar() {
   const sidebarThreads = useStore(selectSidebarThreads);
   const sidebarDisplayThreads = useStore(selectSidebarDisplayThreads);
   const sidebarTreeThreads = useStore(selectSidebarTreeThreads);
+  // Sidebar title filter (search input at the top of the thread area). In-memory only —
+  // never persisted, never in the URL. The filtered list feeds every DISPLAY-facing
+  // derivation (pinned rows, per-project lists, chats); pin pruning and other
+  // bookkeeping keep reading the unfiltered list so a non-matching thread is never
+  // treated as gone.
+  const [sidebarFilterQuery, setSidebarFilterQuery] = useState("");
+  const sidebarFilterInputRef = useRef<HTMLInputElement>(null);
+  const trimmedSidebarFilterQuery = sidebarFilterQuery.trim();
+  const isFilteringThreads = trimmedSidebarFilterQuery.length > 0;
+  const filteredSidebarDisplayThreads = useMemo(
+    () => filterSidebarThreadsByTitle(sidebarDisplayThreads, sidebarFilterQuery),
+    [sidebarDisplayThreads, sidebarFilterQuery],
+  );
+  const filteredSidebarTreeThreads = useMemo(
+    () => filterSidebarThreadsByTitle(sidebarTreeThreads, sidebarFilterQuery),
+    [sidebarTreeThreads, sidebarFilterQuery],
+  );
   const studioProjectIdSet = useMemo(
     () => collectStudioProjectIds(projects, { homeDir, chatWorkspaceRoot, studioWorkspaceRoot }),
     [chatWorkspaceRoot, homeDir, projects, studioWorkspaceRoot],
@@ -1705,13 +1734,13 @@ export default function Sidebar() {
     nonStudioThreads: nonStudioSidebarDisplayThreads,
     studioThreads: studioSidebarDisplayThreads,
   } = useMemo(
-    () => partitionSidebarThreadsByProjectIds(sidebarDisplayThreads, studioProjectIdSet),
-    [sidebarDisplayThreads, studioProjectIdSet],
+    () => partitionSidebarThreadsByProjectIds(filteredSidebarDisplayThreads, studioProjectIdSet),
+    [filteredSidebarDisplayThreads, studioProjectIdSet],
   );
   const { nonStudioThreads: nonStudioSidebarTreeThreads, studioThreads: studioSidebarTreeThreads } =
     useMemo(
-      () => partitionSidebarThreadsByProjectIds(sidebarTreeThreads, studioProjectIdSet),
-      [sidebarTreeThreads, studioProjectIdSet],
+      () => partitionSidebarThreadsByProjectIds(filteredSidebarTreeThreads, studioProjectIdSet),
+      [filteredSidebarTreeThreads, studioProjectIdSet],
     );
   const dismissThreadStatus = useCallback(
     (threadId: ThreadId, statusKey: string | null | undefined) => {
@@ -3027,6 +3056,71 @@ export default function Sidebar() {
       }
     },
     [appSettings.defaultThreadEnvMode, currentProjectShortcutTargetId, navigate, projects],
+  );
+
+  // One-click import from the "Discovered sessions" section. Sessions matched to a project
+  // import straight into it; sessions from unknown locations first get a project created
+  // from their cwd (the shared add-project helper recovers duplicates server-side). The
+  // flow is shared with the main-area preview panel via useImportExternalSession.
+  const handleImportExternalSession = useImportExternalSession();
+
+  const handleOpenExternalSessionThread = useCallback(
+    (threadId: ThreadId) => {
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+      });
+    },
+    [navigate],
+  );
+
+  // "Import all" from a discovered-sessions group header. Folder groups get their
+  // project created up front (same recovery path as single import); the server then
+  // runs the batch strictly sequentially and reports per-item results.
+  const handleImportExternalSessionGroup = useCallback(
+    async (
+      sessions: readonly OrchestrationExternalSession[],
+      project: Project | null,
+    ): Promise<OrchestrationImportExternalThreadsResult> => {
+      const api = readNativeApi();
+      if (!api) {
+        throw new Error("The app server is unavailable.");
+      }
+      if (sessions.length === 0) {
+        return { results: [] };
+      }
+
+      if (!project) {
+        const cwd = sessions[0]?.cwd?.trim() ?? "";
+        if (!cwd) {
+          throw new Error("These sessions have no working directory to add as a project.");
+        }
+        const creationResult = await createOrRecoverProjectFromPath({
+          api,
+          workspaceRoot: cwd,
+          // Discovered sessions can live under directories the user has since
+          // deleted; recreate the (empty) folder so resumed sessions have a real
+          // cwd, matching the single-import flow.
+          createIfMissing: true,
+          loadSnapshot: () => api.orchestration.getShellSnapshot().catch(() => null),
+          maxAttempts: ADD_PROJECT_SNAPSHOT_CATCH_UP_MAX_ATTEMPTS,
+          delayMs: ADD_PROJECT_SNAPSHOT_CATCH_UP_DELAY_MS,
+        });
+        if (creationResult.snapshot) {
+          syncServerShellSnapshot(creationResult.snapshot);
+        }
+      }
+
+      return api.orchestration.importExternalThreads({
+        items: sessions.map((session) => ({
+          provider: session.provider,
+          externalId: session.externalId,
+          ...(session.cwd?.trim() ? { cwd: session.cwd.trim() } : {}),
+          ...(session.title?.trim() ? { title: session.title.trim().slice(0, 120) } : {}),
+        })),
+      });
+    },
+    [syncServerShellSnapshot],
   );
 
   const commitRename = useCallback(
@@ -4418,8 +4512,8 @@ export default function Sidebar() {
   // Trees need child (subagent) threads too; the flat display list stays
   // root-only for pinned rows and other non-tree consumers.
   const sidebarThreadsByProjectId = useMemo(
-    () => groupSidebarThreadsByProjectId(sidebarTreeThreads),
-    [sidebarTreeThreads],
+    () => groupSidebarThreadsByProjectId(filteredSidebarTreeThreads),
+    [filteredSidebarTreeThreads],
   );
   const sortedSidebarThreadsByProjectId = useMemo(() => {
     const byProjectId = new Map<ProjectId, SidebarThreadSummary[]>();
@@ -4756,6 +4850,17 @@ export default function Sidebar() {
       standardProjects,
       resolveThreadStatusForSidebar,
     ],
+  );
+  // While the title filter is active, project groups with zero matching threads are
+  // hidden entirely (order preserved); unfiltered, every project stays visible.
+  const visibleStandardProjects = useMemo(
+    () =>
+      pruneEmptySidebarGroups(
+        standardProjects,
+        (project) => standardProjectSidebarDataById.get(project.id)?.visibleEntries.length ?? 0,
+        isFilteringThreads,
+      ),
+    [isFilteringThreads, standardProjects, standardProjectSidebarDataById],
   );
   const studioProjectSidebarDataById = useMemo<
     ReadonlyMap<ProjectId, SidebarDerivedProjectData>
@@ -5385,6 +5490,11 @@ export default function Sidebar() {
         <ThreadHoverCardContent
           title={thread.title}
           timeLabel={formatRelativeTime(thread.updatedAt ?? thread.createdAt)}
+          lastReplyLabel={
+            thread.latestTurn?.completedAt
+              ? formatRelativeTime(thread.latestTurn.completedAt)
+              : null
+          }
           projectName={hoverMetadata.projectName}
           projectCwd={hoverMetadata.projectCwd}
           sourceProjectName={hoverMetadata.sourceProjectName}
@@ -7033,6 +7143,49 @@ export default function Sidebar() {
                 </SidebarMenu>
               </SidebarGroup>
 
+              {!isOnWorkspace ? (
+                <SidebarGroup className="px-1.5 pt-0 pb-1.5">
+                  <div className="relative">
+                    <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground/48" />
+                    <input
+                      ref={sidebarFilterInputRef}
+                      type="text"
+                      value={sidebarFilterQuery}
+                      placeholder="Filter threads…"
+                      aria-label="Filter threads by title"
+                      className="h-7 w-full rounded-md border border-[color:var(--color-border)] bg-[var(--color-background-control-opaque)] pr-7 pl-7 text-[length:var(--app-font-size-ui,12px)] text-[var(--color-text-foreground)] outline-none placeholder:text-muted-foreground/48 focus:border-[color:var(--color-border-focus)]"
+                      onChange={(event) => setSidebarFilterQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Escape") return;
+                        event.stopPropagation();
+                        setSidebarFilterQuery("");
+                        event.currentTarget.blur();
+                      }}
+                    />
+                    {sidebarFilterQuery.length > 0 ? (
+                      <button
+                        type="button"
+                        aria-label="Clear filter"
+                        className="absolute top-1/2 right-1.5 flex size-4 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/55 hover:text-foreground"
+                        onClick={() => {
+                          setSidebarFilterQuery("");
+                          sidebarFilterInputRef.current?.focus();
+                        }}
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    ) : null}
+                  </div>
+                  {isFilteringThreads ? (
+                    <div className="px-2 pt-1.5 text-[length:var(--app-font-size-ui-xs,10px)] text-muted-foreground/55">
+                      {filteredSidebarDisplayThreads.length > 0
+                        ? `${filteredSidebarDisplayThreads.length} ${filteredSidebarDisplayThreads.length === 1 ? "match" : "matches"}`
+                        : `No threads match '${trimmedSidebarFilterQuery}'`}
+                    </div>
+                  ) : null}
+                </SidebarGroup>
+              ) : null}
+
               {isOnWorkspace ? (
                 <SidebarGroup className="px-1.5 pt-1 pb-1.5">
                   <div className="my-2 h-px w-full bg-border" />
@@ -7320,10 +7473,10 @@ export default function Sidebar() {
                     >
                       <SidebarMenu className="gap-3">
                         <SortableContext
-                          items={standardProjects.map((project) => project.id)}
+                          items={visibleStandardProjects.map((project) => project.id)}
                           strategy={verticalListSortingStrategy}
                         >
-                          {standardProjects.map((project) => (
+                          {visibleStandardProjects.map((project) => (
                             <SortableProjectItem key={project.id} projectId={project.id}>
                               {(dragHandleProps) => renderProjectItem(project, dragHandleProps)}
                             </SortableProjectItem>
@@ -7333,7 +7486,7 @@ export default function Sidebar() {
                     </DndContext>
                   ) : (
                     <SidebarMenu ref={attachProjectListAutoAnimateRef} className="gap-3">
-                      {standardProjects.map((project) => (
+                      {visibleStandardProjects.map((project) => (
                         <SidebarMenuItem key={project.id} className="rounded-md">
                           {renderProjectItem(project, null)}
                         </SidebarMenuItem>
@@ -7368,7 +7521,23 @@ export default function Sidebar() {
             </div>
           </>
         )}
-        {!isOnSettings && !isOnStudio && chatsSectionVisible ? (
+        {!isOnSettings && !isOnWorkspace && !isOnStudio ? (
+          <SidebarGroup className="px-1.5 pt-1 pb-2">
+            <SidebarDiscoveredSessions
+              projects={standardProjects}
+              filterQuery={sidebarFilterQuery}
+              onOpenThread={handleOpenExternalSessionThread}
+              onImportSession={handleImportExternalSession}
+              onImportSessionGroup={handleImportExternalSessionGroup}
+            />
+          </SidebarGroup>
+        ) : null}
+        {!isOnSettings &&
+        !isOnStudio &&
+        chatsSectionVisible &&
+        // While the title filter is active the whole Chats section hides once
+        // nothing matches.
+        (!isFilteringThreads || visibleChatThreadRows.length > 0) ? (
           // sidebar-surface-enter: mounts on the Studio -> Projects switch, so it
           // animates in step with the keyed surface wrapper above.
           <SidebarGroup className="sidebar-surface-enter px-1.5 pt-1 pb-2">
@@ -7432,7 +7601,9 @@ export default function Sidebar() {
                       renderedChatEntries.map((entry) => renderChatItem(entry.row))
                     ) : (
                       <div className="px-2 py-2 text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/48">
-                        No chats yet
+                        {isFilteringThreads
+                          ? `No chats match '${trimmedSidebarFilterQuery}'`
+                          : "No chats yet"}
                       </div>
                     )}
                     {canShowMoreChatThreads || canShowLessChatThreads ? (

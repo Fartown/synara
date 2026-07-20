@@ -1,6 +1,12 @@
 import type { ResolvedKeybindingsConfig } from "@synara/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { Outlet, createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
+import {
+  Outlet,
+  createFileRoute,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -11,6 +17,11 @@ import {
 import ShortcutsDialog from "../components/ShortcutsDialog";
 import { RecentViewSwitcher } from "../components/RecentViewSwitcher";
 import { shouldRenderTerminalWorkspace } from "../components/ChatView.logic";
+import { ExternalSessionPreviewPanel } from "../components/ExternalSessionPreviewPanel";
+import {
+  shouldCloseExternalSessionPreviewOnRouteChange,
+  useExternalSessionPreviewStore,
+} from "../externalSessionPreviewStore";
 import ThreadSidebar from "../components/Sidebar";
 import { isElectron } from "../env";
 import { useHandleNewChat } from "../hooks/useHandleNewChat";
@@ -525,6 +536,26 @@ function ChatRouteLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const resolvedSidebarOpen = isEditorView ? false : sidebarOpen;
 
+  // External session preview: while a selection is active the main area renders the
+  // preview panel INSTEAD of the route Outlet, so thread content and a preview can
+  // never stack. The preview closes centrally whenever the route thread id changes —
+  // every thread/chat/import/search-palette navigation funnels through that id, so no
+  // per-call-site clearing is needed.
+  const previewSelection = useExternalSessionPreviewStore((state) => state.previewSelection);
+  const closeExternalSessionPreview = useExternalSessionPreviewStore((state) => state.closePreview);
+  const routeThreadId = useParams({
+    strict: false,
+    select: (params) => (params as { threadId?: string }).threadId ?? null,
+  });
+  const previousRouteThreadIdRef = useRef<string | null>(routeThreadId);
+  useEffect(() => {
+    const previousRouteThreadId = previousRouteThreadIdRef.current;
+    previousRouteThreadIdRef.current = routeThreadId;
+    if (shouldCloseExternalSessionPreviewOnRouteChange(previousRouteThreadId, routeThreadId)) {
+      closeExternalSessionPreview();
+    }
+  }, [routeThreadId, closeExternalSessionPreview]);
+
   // The thread sidebar always lives on the left; the right dock is a separate surface.
   const sidebarElement = (
     <Sidebar
@@ -555,7 +586,7 @@ function ChatRouteLayout() {
           <SidebarRail placement="content-seam" />
         </SidebarInstanceProvider>
       )}
-      <Outlet />
+      {previewSelection ? <ExternalSessionPreviewPanel selection={previewSelection} /> : <Outlet />}
     </div>
   );
 

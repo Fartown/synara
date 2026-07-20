@@ -26,6 +26,10 @@ export const ProjectionThreadSession = Schema.Struct({
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,
+  // Provider-native session/thread id for imported external sessions; null for
+  // Synara-native sessions. Written only from thread.session-set events carrying
+  // externalSessionId — later events without it leave the value untouched.
+  providerThreadId: Schema.NullOr(Schema.String),
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;
 
@@ -38,6 +42,13 @@ export const DeleteProjectionThreadSessionInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type DeleteProjectionThreadSessionInput = typeof DeleteProjectionThreadSessionInput.Type;
+
+export const ProjectionExternalSessionMapping = Schema.Struct({
+  threadId: ThreadId,
+  providerName: Schema.String,
+  providerThreadId: Schema.String,
+});
+export type ProjectionExternalSessionMapping = typeof ProjectionExternalSessionMapping.Type;
 
 /**
  * ProjectionThreadSessionRepositoryShape - Service API for projected thread sessions.
@@ -63,6 +74,24 @@ export interface ProjectionThreadSessionRepositoryShape {
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadSessionInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Resolve the thread whose session was imported from the given provider-native
+   * session/thread id (`provider_thread_id` column).
+   */
+  readonly getThreadIdByProviderThreadId: (
+    providerName: string,
+    providerThreadId: string,
+  ) => Effect.Effect<Option.Option<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * List every thread ↔ provider-native session mapping (rows with a non-null
+   * `provider_thread_id`), used by the external session discovery join.
+   */
+  readonly listProviderThreadIds: () => Effect.Effect<
+    ReadonlyArray<ProjectionExternalSessionMapping>,
+    ProjectionRepositoryError
+  >;
 }
 
 /**

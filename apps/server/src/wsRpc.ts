@@ -73,15 +73,24 @@ import {
 import { Open, resolveAvailableEditors } from "./open";
 import { makeDispatchCommandNormalizer } from "./orchestration/dispatchCommandNormalization";
 import { makeImportThreadHandler } from "./orchestration/importThreadRoute";
+import { makeImportExternalThreadsHandler } from "./orchestration/importExternalThreadsRoute";
+import {
+  makeGetThreadExternalSessionHandler,
+  makeListExternalSessionsHandler,
+} from "./orchestration/listExternalSessionsRoute";
+import { makePreviewExternalSessionHandler } from "./orchestration/previewExternalSessionRoute";
+import { makeResyncExternalThreadHandler } from "./orchestration/resyncExternalThreadRoute";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { shouldPublishThreadShellForEvent } from "./orchestration/threadShellEvents";
+import { ProjectionThreadSessionRepository } from "./persistence/Services/ProjectionThreadSessions";
 import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryService";
 import { discoverSkillsCatalog, synaraSkillsDir } from "./provider/skillsCatalog";
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderSessionDirectory } from "./provider/Services/ProviderSessionDirectory";
 import { listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { ProfileStatsQuery } from "./profileStats";
@@ -293,6 +302,8 @@ const makeWsRpcHandlersLayer = () =>
       const providerDiscoveryService = yield* ProviderDiscoveryService;
       const providerHealth = yield* ProviderHealth;
       const providerService = yield* ProviderService;
+      const providerSessionDirectory = yield* ProviderSessionDirectory;
+      const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
       const lifecycleEvents = yield* ServerLifecycleEvents;
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
@@ -430,6 +441,46 @@ const makeWsRpcHandlersLayer = () =>
         projectionSnapshotQuery: projectionReadModelQuery,
         providerAdapterRegistry,
         providerService,
+        providerSessionDirectory,
+        serverSettings,
+        projectionThreadSessionRepository,
+      });
+
+      const listExternalSessions = makeListExternalSessionsHandler({
+        providerAdapterRegistry,
+        providerSessionDirectory,
+        serverSettings,
+        projectionThreadSessionRepository,
+      });
+
+      const previewExternalSession = makePreviewExternalSessionHandler({
+        providerAdapterRegistry,
+        serverSettings,
+      });
+
+      const importExternalThreads = makeImportExternalThreadsHandler({
+        fileSystem,
+        orchestrationEngine,
+        path,
+        platform: process.platform,
+        projectionSnapshotQuery: projectionReadModelQuery,
+        providerAdapterRegistry,
+        providerService,
+        providerSessionDirectory,
+        serverSettings,
+        projectionThreadSessionRepository,
+        canonicalizeProjectWorkspaceRoot,
+      });
+
+      const getThreadExternalSession = makeGetThreadExternalSessionHandler({
+        providerSessionDirectory,
+      });
+
+      const resyncExternalThread = makeResyncExternalThreadHandler({
+        orchestrationEngine,
+        projectionSnapshotQuery: projectionReadModelQuery,
+        providerAdapterRegistry,
+        providerSessionDirectory,
       });
 
       const dispatchOrchestrationCommand = (command: OrchestrationCommand) =>
@@ -598,6 +649,16 @@ const makeWsRpcHandlersLayer = () =>
           ),
         [ORCHESTRATION_WS_METHODS.importThread]: (input) =>
           rpcEffect(importThread(input), "Failed to import thread"),
+        [ORCHESTRATION_WS_METHODS.listExternalSessions]: (input) =>
+          rpcEffect(listExternalSessions(input), "Failed to list external sessions"),
+        [ORCHESTRATION_WS_METHODS.previewExternalSession]: (input) =>
+          rpcEffect(previewExternalSession(input), "Failed to preview external session"),
+        [ORCHESTRATION_WS_METHODS.importExternalThreads]: (input) =>
+          rpcEffect(importExternalThreads(input), "Failed to import external sessions"),
+        [ORCHESTRATION_WS_METHODS.getThreadExternalSession]: (input) =>
+          rpcEffect(getThreadExternalSession(input), "Failed to resolve thread external session"),
+        [ORCHESTRATION_WS_METHODS.resyncExternalThread]: (input) =>
+          rpcEffect(resyncExternalThread(input), "Failed to resync external thread"),
         [ORCHESTRATION_WS_METHODS.getSnapshot]: () =>
           rpcEffect(
             projectionReadModelQuery.getSnapshot(),

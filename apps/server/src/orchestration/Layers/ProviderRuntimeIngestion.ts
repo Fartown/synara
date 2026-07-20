@@ -105,7 +105,7 @@ const MAX_BUFFERED_TOOL_OUTPUT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_SUMMARY_CHARS = 8_000;
 const MAX_BUFFERED_REASONING_SUMMARY_PARTS = 24;
 const MAX_ACTIVITY_DATA_JSON_CHARS = 16_000;
-const MAX_ACTIVITY_DATA_STRING_CHARS = 2_000;
+export const MAX_ACTIVITY_DATA_STRING_CHARS = 2_000;
 const MAX_ACTIVITY_DATA_ARRAY_ITEMS = 24;
 const MAX_ACTIVITY_DATA_OBJECT_KEYS = 64;
 const ACTIVITY_DATA_TRUNCATION_MARKER = "__synaraTruncated";
@@ -258,7 +258,7 @@ function inferRuntimeModeFromUserInputAnswers(
   return null;
 }
 
-function truncateDetail(value: string, limit = 180): string {
+export function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 
@@ -538,7 +538,7 @@ function truncateJsonValue(
   return result;
 }
 
-function boundActivityData(value: unknown): unknown {
+export function boundActivityData(value: unknown): unknown {
   const serialized = stringifyJsonLike(value);
   if (serialized.length <= MAX_ACTIVITY_DATA_JSON_CHARS) {
     return JSON.parse(serialized);

@@ -9,7 +9,7 @@
 
 import type { ReactNode } from "react";
 
-import { GitBranchIcon, WorktreeIcon } from "~/lib/icons";
+import { ClockIcon, GitBranchIcon, WorktreeIcon } from "~/lib/icons";
 import { FolderClosed } from "./FolderClosed";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import {
@@ -21,6 +21,8 @@ export type ThreadHoverCardContentProps = {
   title: string;
   /** Pre-formatted relative time (e.g. "2h"); omitted when unavailable. */
   timeLabel: string | null;
+  /** Pre-formatted time of the thread's last reply (latest completed turn). */
+  lastReplyLabel: string | null;
   projectName: string | null;
   /** Project cwd, used to render the matching folder/favicon glyph. */
   projectCwd: string | null;
@@ -46,6 +48,7 @@ function MetaRow({ icon, children }: { icon: ReactNode; children: string }) {
 export function ThreadHoverCardContent({
   title,
   timeLabel,
+  lastReplyLabel,
   projectName,
   projectCwd,
   sourceProjectName,
@@ -53,7 +56,11 @@ export function ThreadHoverCardContent({
   worktreeName,
 }: ThreadHoverCardContentProps) {
   const hasMeta =
-    Boolean(projectName) || Boolean(sourceProjectName) || Boolean(branch) || Boolean(worktreeName);
+    Boolean(projectName) ||
+    Boolean(sourceProjectName) ||
+    Boolean(branch) ||
+    Boolean(worktreeName) ||
+    Boolean(lastReplyLabel);
 
   return (
     <div
@@ -71,6 +78,11 @@ export function ThreadHoverCardContent({
       </div>
       {hasMeta ? (
         <div className="flex flex-col gap-0">
+          {lastReplyLabel ? (
+            <MetaRow icon={<ClockIcon className={META_ICON_CLASS_NAME} aria-hidden />}>
+              {`Last reply ${lastReplyLabel}`}
+            </MetaRow>
+          ) : null}
           {projectName ? (
             <MetaRow
               icon={

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "computer-use": {
+      "source": "stablyai/orca",
+      "sourceType": "github",
+      "skillPath": "skills/computer-use/SKILL.md",
+      "computedHash": "4950da0932efc1a9dc5a9b861c4282c59f4b51eaddcb5aa112cff4e380b8f62e"
+    }
+  }
+}

@@ -110,9 +110,11 @@ Synara is currently Codex-first. The server starts `codex app-server` (JSON-RPC 
 How we use it in this codebase:
 
 - Session startup/resume and turn lifecycle are brokered in `apps/server/src/codexAppServerManager.ts`.
-- Provider dispatch and thread event logging are coordinated in `apps/server/src/providerManager.ts`.
-- WebSocket server routes NativeApi methods in `apps/server/src/wsServer.ts`.
+- Provider dispatch and thread event logging are coordinated in `apps/server/src/provider/Layers/ProviderService.ts` with per-provider adapters in `apps/server/src/provider/Layers/`.
+- WebSocket server routes NativeApi methods in `apps/server/src/wsRpc.ts`.
 - Web app consumes orchestration domain events via WebSocket push on channel `orchestration.domainEvent` (provider runtime activity is projected into orchestration events server-side).
+- External sessions (created outside Synara) are discovered via `orchestration.listExternalSessions` (`apps/server/src/orchestration/listExternalSessionsRoute.ts`) — Codex via `thread/list`, Claude via the Agent SDK `listSessions()` — and imported through `orchestration.importThread` (`apps/server/src/orchestration/importThreadRoute.ts`), which dedups by `(provider, externalId)`. Synara-created sessions stay resumable by the official CLIs: the codex CODEX_HOME overlay symlinks the real `~/.codex` (including `sessions/`; diverged real dirs are healed on spawn in `apps/server/src/codexProcessEnv.ts`), and Claude sessions always persist to the real `~/.claude/projects`.
+- Imported sessions re-sync on demand via `orchestration.resyncExternalThread` (`apps/server/src/orchestration/resyncExternalThreadRoute.ts`), which re-reads the provider-native history and re-dispatches the same `thread.history.import` upsert; deleting a codex-bound thread also best-effort archives the codex-side rollout via `thread/archive` (never blocks deletion; other providers are no-ops).
 
 Docs:
 

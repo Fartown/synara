@@ -210,6 +210,41 @@ const TERMINAL_COMPATIBILITY_ERROR_CODES = new Set([
   "WS_CAPABILITIES_INCOMPATIBLE",
 ]);
 
+// Server-side admission marks capacity rejections as retryable: lease slots
+// drain as other subscriptions end, so these streams should re-arm in place.
+const RETRYABLE_STREAM_ADMISSION_ERROR_CODES = new Set([
+  "STREAM_CAPACITY_EXCEEDED",
+  "THREAD_STREAM_CAPACITY_EXCEEDED",
+]);
+const DEFAULT_STREAM_ADMISSION_RETRY_AFTER_MS = 1_000;
+const MIN_STREAM_ADMISSION_RETRY_AFTER_MS = 50;
+
+export interface RetryableStreamAdmissionFailure {
+  readonly code: string;
+  readonly retryAfterMs: number;
+}
+
+export function resolveRetryableStreamAdmissionFailure(
+  cause: Cause.Cause<unknown>,
+): RetryableStreamAdmissionFailure | null {
+  for (const reason of cause.reasons) {
+    if (!Cause.isFailReason(reason)) continue;
+    const error = reason.error;
+    if (!error || typeof error !== "object") continue;
+    const code = "code" in error ? error.code : undefined;
+    if (typeof code !== "string" || !RETRYABLE_STREAM_ADMISSION_ERROR_CODES.has(code)) continue;
+    if ("retryable" in error && error.retryable === false) continue;
+    const retryAfterMs =
+      "retryAfterMs" in error &&
+      typeof error.retryAfterMs === "number" &&
+      Number.isFinite(error.retryAfterMs)
+        ? Math.max(MIN_STREAM_ADMISSION_RETRY_AFTER_MS, error.retryAfterMs)
+        : DEFAULT_STREAM_ADMISSION_RETRY_AFTER_MS;
+    return { code, retryAfterMs };
+  }
+  return null;
+}
+
 export function isTerminalCompatibilityFailure(error: unknown): boolean {
   return (
     (Schema.is(WsCompatibilityError)(error) && error.retryable === false) ||
@@ -853,6 +888,21 @@ export class WsTransport {
           }
           if (wasReplacedOrStopped || this.disposed) {
             return;
+          }
+          if (restart && Exit.isFailure(exit)) {
+            // Capacity rejections are typed retryable by the server: lease slots
+            // drain as other subscriptions end, so re-arm this stream in place
+            // instead of tearing down the whole socket (or dying permanently,
+            // which used to leave the open thread without a detail snapshot).
+            const retryableAdmission = resolveRetryableStreamAdmissionFailure(exit.cause);
+            if (retryableAdmission) {
+              window.setTimeout(() => {
+                if (!this.disposed && !this.streamCleanups.has(key)) {
+                  restart();
+                }
+              }, retryableAdmission.retryAfterMs);
+              return;
+            }
           }
           if (restart && Exit.isFailure(exit) && shouldReconnectAfterStreamFailure(exit.cause)) {
             window.setTimeout(

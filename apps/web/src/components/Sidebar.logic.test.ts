@@ -47,6 +47,10 @@ import {
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   sortThreadsForSidebar,
+  filterSidebarThreadsByTitle,
+  normalizeSidebarFilterQuery,
+  pruneEmptySidebarGroups,
+  sidebarTitleMatchesFilter,
 } from "./Sidebar.logic";
 import { ProjectId, ThreadId } from "@synara/contracts";
 import {
@@ -1896,6 +1900,67 @@ describe("sortThreadsForSidebar", () => {
       ThreadId.makeUnsafe("thread-2"),
     ]);
   });
+
+  it("sorts threads by the latest completed turn in last-reply mode", () => {
+    const sorted = sortThreadsForSidebar(
+      [
+        makeThread({
+          id: ThreadId.makeUnsafe("thread-older-reply"),
+          latestTurn: { completedAt: "2026-03-09T10:02:00.000Z" } as never,
+          latestUserMessageAt: "2026-03-09T10:09:00.000Z",
+          createdAt: "2026-03-09T10:00:00.000Z",
+          updatedAt: "2026-03-09T10:09:00.000Z",
+          messages: [],
+        }),
+        makeThread({
+          id: ThreadId.makeUnsafe("thread-newer-reply"),
+          latestTurn: { completedAt: "2026-03-09T10:08:00.000Z" } as never,
+          latestUserMessageAt: "2026-03-09T10:01:00.000Z",
+          createdAt: "2026-03-09T10:00:00.000Z",
+          updatedAt: "2026-03-09T10:01:00.000Z",
+          messages: [],
+        }),
+      ],
+      "last_reply",
+    );
+
+    // last_reply ranks by reply time, which here disagrees with user-message recency.
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      ThreadId.makeUnsafe("thread-newer-reply"),
+      ThreadId.makeUnsafe("thread-older-reply"),
+    ]);
+  });
+
+  it("falls back to the latest user message, then recency, when last-reply data is missing", () => {
+    const sorted = sortThreadsForSidebar(
+      [
+        makeThread({
+          id: ThreadId.makeUnsafe("thread-no-reply"),
+          latestTurn: null,
+          latestUserMessageAt: "2026-03-09T10:04:00.000Z",
+          createdAt: "2026-03-09T10:00:00.000Z",
+          updatedAt: "2026-03-09T10:04:00.000Z",
+          messages: [],
+        }),
+        makeThread({
+          id: ThreadId.makeUnsafe("thread-with-reply"),
+          latestTurn: { completedAt: "2026-03-09T10:03:00.000Z" } as never,
+          latestUserMessageAt: "2026-03-09T10:06:00.000Z",
+          createdAt: "2026-03-09T10:00:00.000Z",
+          updatedAt: "2026-03-09T10:06:00.000Z",
+          messages: [],
+        }),
+      ],
+      "last_reply",
+    );
+
+    // No-reply thread falls back to its (later) user message at 10:04, which outranks
+    // the other thread's completed reply at 10:03.
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      ThreadId.makeUnsafe("thread-no-reply"),
+      ThreadId.makeUnsafe("thread-with-reply"),
+    ]);
+  });
 });
 
 describe("getFallbackThreadIdAfterDelete", () => {
@@ -2086,5 +2151,55 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
+  });
+});
+
+describe("sidebar title filter helpers", () => {
+  it("normalizes the query by trimming and lowercasing", () => {
+    expect(normalizeSidebarFilterQuery("  Fix BUG ")).toBe("fix bug");
+    expect(normalizeSidebarFilterQuery("   ")).toBe("");
+  });
+
+  it("matches titles case-insensitively on the normalized query", () => {
+    expect(sidebarTitleMatchesFilter("Fix Flaky Test", "flaky")).toBe(true);
+    expect(sidebarTitleMatchesFilter("Fix Flaky Test", "fix")).toBe(true);
+    expect(sidebarTitleMatchesFilter("Fix Flaky Test", "search")).toBe(false);
+    expect(sidebarTitleMatchesFilter("Anything", "")).toBe(true);
+  });
+
+  it("filters thread summaries by title and passes everything through on an empty query", () => {
+    const threads = [
+      { id: "t1", title: "Fix flaky test" },
+      { id: "t2", title: "Add Search filter" },
+      { id: "t3", title: "Database migration" },
+    ];
+
+    expect(filterSidebarThreadsByTitle(threads, "")).toEqual(threads);
+    expect(filterSidebarThreadsByTitle(threads, "   ")).toEqual(threads);
+    expect(filterSidebarThreadsByTitle(threads, " SEARCH ").map((thread) => thread.id)).toEqual([
+      "t2",
+    ]);
+    expect(filterSidebarThreadsByTitle(threads, "fix").map((thread) => thread.id)).toEqual(["t1"]);
+    expect(filterSidebarThreadsByTitle(threads, "missing")).toEqual([]);
+  });
+});
+
+describe("pruneEmptySidebarGroups", () => {
+  const groups = [
+    { id: "a", count: 2 },
+    { id: "b", count: 0 },
+    { id: "c", count: 1 },
+  ];
+
+  it("returns all groups in order when not filtering", () => {
+    expect(
+      pruneEmptySidebarGroups(groups, (group) => group.count, false).map((group) => group.id),
+    ).toEqual(["a", "b", "c"]);
+  });
+
+  it("drops empty groups and preserves order while filtering", () => {
+    expect(
+      pruneEmptySidebarGroups(groups, (group) => group.count, true).map((group) => group.id),
+    ).toEqual(["a", "c"]);
   });
 });

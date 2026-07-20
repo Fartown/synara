@@ -36,6 +36,7 @@ const OTHER_THREAD_SHELL_EVENT_TYPES = new Set<OrchestrationEvent["type"]>([
   "thread.conversation-rolled-back",
   "thread.session-set",
   "thread.turn-diff-completed",
+  "thread.turn-imported",
 ]);
 
 export function shouldApplyThreadsProjection(event: OrchestrationEvent): boolean {
@@ -53,6 +54,7 @@ export function shouldRefreshThreadShellSummary(event: OrchestrationEvent): bool
     case "thread.conversation-rolled-back":
     case "thread.session-set":
     case "thread.turn-diff-completed":
+    case "thread.turn-imported":
       return true;
     case "thread.activity-appended":
       return THREAD_SHELL_SUMMARY_ACTIVITY_KINDS.has(event.payload.activity.kind);

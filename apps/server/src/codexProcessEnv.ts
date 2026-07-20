@@ -15,11 +15,16 @@ import {
 } from "@synara/shared/shell";
 
 import { resolveBaseCodexHomePath, resolveSynaraCodexHomeOverlayPath } from "./codexHomePaths.ts";
+import { createLogger } from "./logger.ts";
 import { buildProviderChildEnvironment } from "./providerChildEnvironment.ts";
 
 const CODEX_PROCESS_SHELL_ENV_NAMES = ["PATH", "SSH_AUTH_SOCK"] as const;
 const NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS = "NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS";
 const CODEX_OVERLAY_SHARED_STATE_FILES = new Set(["auth.json"]);
+// Session rollouts are the only overlay entries worth merging back into the
+// source home: Codex writes them as immutable files under YYYY/MM/DD dirs.
+const CODEX_OVERLAY_SESSION_DIR_NAMES = new Set(["sessions", "archived_sessions"]);
+const log = createLogger("codex-process-env");
 const SYNARA_CONFIG_SUPPRESSIONS_FILE = "synara-config-suppressions-v1.json";
 const MAX_CONFIG_SUPPRESSION_SECTIONS = 32;
 const MAX_CONFIG_SUPPRESSION_HEADER_LENGTH = 256;
@@ -190,6 +195,66 @@ export function prioritizeCodexOverlayEntries(entries: readonly string[]): strin
   return [...sharedStateEntries, ...otherEntries];
 }
 
+async function copyDivergedSessionDirIntoSource(
+  sourceDirPath: string,
+  overlayDirPath: string,
+): Promise<number> {
+  let copiedFiles = 0;
+  for (const entry of await fs.readdir(overlayDirPath, { withFileTypes: true })) {
+    const overlayEntryPath = path.join(overlayDirPath, entry.name);
+    const sourceEntryPath = path.join(sourceDirPath, entry.name);
+    if (entry.isDirectory()) {
+      await fs.mkdir(sourceEntryPath, { recursive: true });
+      copiedFiles += await copyDivergedSessionDirIntoSource(sourceEntryPath, overlayEntryPath);
+      continue;
+    }
+    // Rollouts are immutable, so an existing same-relative-path file is assumed
+    // identical and must never be overwritten.
+    if (entry.isFile()) {
+      const sourceExists = await fs.lstat(sourceEntryPath).then(
+        () => true,
+        () => false,
+      );
+      if (!sourceExists) {
+        await fs.copyFile(overlayEntryPath, sourceEntryPath);
+        copiedFiles += 1;
+      }
+    }
+  }
+  return copiedFiles;
+}
+
+async function healDivergedCodexOverlaySessionDir(input: {
+  readonly entryName: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+}): Promise<boolean> {
+  let copiedFiles = 0;
+  try {
+    await fs.mkdir(input.sourcePath, { recursive: true });
+    copiedFiles = await copyDivergedSessionDirIntoSource(input.sourcePath, input.targetPath);
+  } catch (error) {
+    // Partial copies are additive-only, so keep them; the overlay directory must
+    // stay in place because its unmerged files are the only copies.
+    log.warn("failed to merge diverged codex overlay session directory into the source home", {
+      entry: input.entryName,
+      sourcePath: input.sourcePath,
+      targetPath: input.targetPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+
+  await fs.rm(input.targetPath, { recursive: true, force: true });
+  await linkOrCopyCodexOverlayEntry({ ...input, type: "dir" });
+  log.info("healed diverged codex overlay session directory", {
+    entry: input.entryName,
+    sourcePath: input.sourcePath,
+    copiedFiles,
+  });
+  return true;
+}
+
 async function ensureCodexOverlaySymlink(input: {
   readonly entryName: string;
   readonly sourcePath: string;
@@ -216,6 +281,11 @@ async function ensureCodexOverlaySymlink(input: {
       // SQLite files must stay generation-matched, and auth must mirror the
       // user's real Codex home so external `codex login` changes are visible.
       await fs.rm(input.targetPath, { recursive: true, force: true });
+    } else if (targetStat.isDirectory() && CODEX_OVERLAY_SESSION_DIR_NAMES.has(input.entryName)) {
+      // A real sessions directory in the overlay means Codex created it before
+      // the source home had one; merge it back instead of diverging forever.
+      await healDivergedCodexOverlaySessionDir(input);
+      return;
     } else {
       return;
     }
@@ -564,6 +634,28 @@ async function prepareSynaraCodexHomeOverlayUnlocked(input: {
   } catch {
     // If the source home is partially missing, Codex can still start with the
     // overlay config and create any required state lazily.
+  }
+
+  // Session directories that only exist in the overlay are never visited by the
+  // loop above (it iterates the source home), so scan for them directly.
+  try {
+    for (const entry of await fs.readdir(overlayHomePath)) {
+      if (!CODEX_OVERLAY_SESSION_DIR_NAMES.has(entry)) {
+        continue;
+      }
+      const targetPath = path.join(overlayHomePath, entry);
+      const targetStat = await fs.lstat(targetPath);
+      if (targetStat.isSymbolicLink() || !targetStat.isDirectory()) {
+        continue;
+      }
+      await healDivergedCodexOverlaySessionDir({
+        entryName: entry,
+        sourcePath: path.join(sourceHomePath, entry),
+        targetPath,
+      });
+    }
+  } catch {
+    // Overlay healing is best-effort; Codex can still start with the overlay as-is.
   }
 
   const sourceConfigPath = path.join(sourceHomePath, "config.toml");

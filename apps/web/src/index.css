@@ -1771,6 +1771,18 @@ label:has(> select#reasoning-effort) select {
   -webkit-user-drag: none;
 }
 
+/* Document/file previews render local markdown images block-level and readable
+   instead of as chat thumbnails. */
+.chat-generated-image--full {
+  display: block;
+  width: fit-content;
+  max-width: min(760px, 100%);
+}
+
+.chat-generated-image--full .chat-generated-image__img {
+  max-height: none;
+}
+
 .chat-generated-image[data-status="loading"] .chat-generated-image__img {
   opacity: 0;
 }

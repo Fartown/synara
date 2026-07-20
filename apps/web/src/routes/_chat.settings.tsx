@@ -242,6 +242,7 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS = {
 
 const SIDEBAR_THREAD_SORT_ORDER_LABELS = {
   updated_at: "Recently active",
+  last_reply: "Last reply",
   created_at: "Newest first",
 } as const;
 
@@ -1853,7 +1854,7 @@ function SettingsRouteView() {
             <SettingsSelectControl
               value={settings.sidebarThreadSortOrder}
               onValueChange={(value) => {
-                if (value !== "updated_at" && value !== "created_at") {
+                if (value !== "updated_at" && value !== "created_at" && value !== "last_reply") {
                   return;
                 }
                 updateSettings({ sidebarThreadSortOrder: value });
@@ -1863,6 +1864,9 @@ function SettingsRouteView() {
             >
               <SelectItem hideIndicator value="updated_at">
                 {SIDEBAR_THREAD_SORT_ORDER_LABELS.updated_at}
+              </SelectItem>
+              <SelectItem hideIndicator value="last_reply">
+                {SIDEBAR_THREAD_SORT_ORDER_LABELS.last_reply}
               </SelectItem>
               <SelectItem hideIndicator value="created_at">
                 {SIDEBAR_THREAD_SORT_ORDER_LABELS.created_at}
@@ -2990,6 +2994,29 @@ function SettingsRouteView() {
               </div>
             </SortableContext>
           </DndContext>
+        </SettingsRow>
+      </SettingsSection>
+      <SettingsSection title="External sessions">
+        <SettingsRow
+          title="Auto-import new sessions"
+          description="Automatically import newly discovered Codex/Claude sessions from folders that already have imported sessions. Existing sessions are never backfilled, and imported threads appear under their project like any other thread."
+          status={serverSettingsQuery.data?.externalSessions.autoImportEnabled ? "On" : "Off"}
+        >
+          <Switch
+            checked={serverSettingsQuery.data?.externalSessions.autoImportEnabled ?? false}
+            onCheckedChange={(checked) => {
+              const autoImportEnabled = Boolean(checked);
+              void ensureNativeApi()
+                .server.updateSettings({ externalSessions: { autoImportEnabled } })
+                .then((nextSettings) => {
+                  queryClient.setQueryData(serverQueryKeys.settings(), nextSettings);
+                })
+                .catch(() => {
+                  void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
+                });
+            }}
+            aria-label="Toggle external session auto-import"
+          />
         </SettingsRow>
       </SettingsSection>
       {renderProviderInstallsSection()}

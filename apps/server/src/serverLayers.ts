@@ -38,6 +38,7 @@ import { WorkspaceLayerLive } from "./workspace/runtimeLayer";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver";
 import { ServerEnvironmentLive } from "./environment/Layers/ServerEnvironment";
 import { AutomationRepositoryLive } from "./persistence/Layers/AutomationRepository";
+import { ExternalAutoImportStateLive } from "./persistence/Layers/ExternalAutoImportState";
 import { ProjectPullRequestPinsLive } from "./persistence/Layers/ProjectPullRequestPins";
 import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns";
 import { OrchestrationEventDeliveryRepositoryLive } from "./persistence/Layers/OrchestrationEventDeliveries";
@@ -167,6 +168,7 @@ export function makeServerRuntimeServicesLayer(
     AutomationRepositoryLive,
     AgentGatewayOperationRepositoryLive,
     providerHealthLayer,
+    ExternalAutoImportStateLive,
     ProjectPullRequestPinsLive,
     pullRequestServiceLayer,
     orchestrationReactorLayer,

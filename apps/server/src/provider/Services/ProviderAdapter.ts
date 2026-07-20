@@ -86,6 +86,28 @@ export interface ProviderThreadSnapshot {
   readonly cwd?: string | null;
 }
 
+export interface ProviderExternalThreadSummary {
+  readonly id: string;
+  readonly preview: string;
+  readonly cwd?: string;
+  readonly modelProvider?: string;
+  readonly source?: string;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+}
+
+export interface ProviderListExternalThreadsInput {
+  readonly cwd?: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+  readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
+}
+
+export interface ProviderListExternalThreadsResult {
+  readonly threads: ReadonlyArray<ProviderExternalThreadSummary>;
+  readonly nextCursor: string | null;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -193,7 +215,25 @@ export interface ProviderAdapterShape<TError> {
   readonly readExternalThread?: (input: {
     readonly externalThreadId: string;
     readonly cwd?: string;
+    readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
   }) => Effect.Effect<ProviderThreadSnapshot, TError>;
+
+  /**
+   * List provider threads persisted outside Synara for external session discovery.
+   */
+  readonly listExternalThreads?: (
+    input: ProviderListExternalThreadsInput,
+  ) => Effect.Effect<ProviderListExternalThreadsResult, TError>;
+
+  /**
+   * Archive a persisted provider thread without requiring a local app thread binding.
+   * Non-destructive on the provider side (the rollout stays recoverable); used for
+   * best-effort cleanup when the owning Synara thread is deleted.
+   */
+  readonly archiveExternalThread?: (input: {
+    readonly externalThreadId: string;
+    readonly cwd?: string;
+  }) => Effect.Effect<void, TError>;
 
   /**
    * Roll back a provider thread by N turns.

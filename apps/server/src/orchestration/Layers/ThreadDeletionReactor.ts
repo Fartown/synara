@@ -1,11 +1,14 @@
 import { ThreadId, type OrchestrationEvent } from "@synara/contracts";
 import { makeDrainableWorker, startDrainableWorkerProducers } from "@synara/shared/DrainableWorker";
-import { Cause, Effect, Layer, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Stream } from "effect";
 
 import { ProfileStatsArchive } from "../../profileStatsArchive";
+import { ProviderAdapterRegistry } from "../../provider/Services/ProviderAdapterRegistry";
 import { ProviderService } from "../../provider/Services/ProviderService";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory";
 import { TerminalManager } from "../../terminal/Services/Manager";
 import { THREAD_RETENTION_COMMAND_ID_PREFIX } from "../../threadRetention";
+import { extractExternalSessionId } from "../externalSessions";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine";
 import {
   ThreadDeletionReactor,
@@ -69,7 +72,9 @@ export const cleanupSucceededUnlessInterrupted = <R, E>({
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const profileStatsArchive = yield* ProfileStatsArchive;
+  const providerAdapterRegistry = yield* ProviderAdapterRegistry;
   const providerService = yield* ProviderService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
   const terminalManager = yield* TerminalManager;
 
   const refreshCommandReadModelAfterPurge = (threadId: string) =>
@@ -165,11 +170,72 @@ const make = Effect.gen(function* () {
     );
   };
 
+  // Codex archive-on-delete: capture the binding's external thread id BEFORE the
+  // provider session stop drops the persisted binding, then (after cleanup) move the
+  // codex-side rollout into archived_sessions via thread/archive. Strictly
+  // best-effort: archive is recoverable, so failures (missing codex CLI, spawn
+  // errors, already-archived rollouts) are logged and never block or roll back the
+  // deletion. Other providers have no equivalent API and are skipped.
+  const readCodexExternalThreadIdForArchive = (
+    threadId: ThreadDeletedEvent["payload"]["threadId"],
+  ) =>
+    providerSessionDirectory.getBinding(threadId).pipe(
+      Effect.map((bindingOption) => {
+        if (Option.isNone(bindingOption) || bindingOption.value.provider !== "codex") {
+          return null;
+        }
+        return extractExternalSessionId("codex", bindingOption.value.resumeCursor) ?? null;
+      }),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.failCause(cause);
+        }
+        return Effect.logDebug("thread deletion cleanup could not read provider binding", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as(null));
+      }),
+    );
+
+  const archiveCodexExternalThread = Effect.fn(function* (
+    threadId: ThreadDeletedEvent["payload"]["threadId"],
+    externalThreadId: string,
+  ) {
+    const adapter = yield* providerAdapterRegistry.getByProvider("codex");
+    if (!adapter.archiveExternalThread) return;
+    yield* adapter.archiveExternalThread({ externalThreadId });
+    yield* Effect.logInfo("archived codex rollout for deleted thread", {
+      threadId,
+      externalThreadId,
+    });
+  });
+
+  const archiveCodexExternalThreadUnlessInterrupted = (
+    threadId: ThreadDeletedEvent["payload"]["threadId"],
+    externalThreadId: string | null,
+  ) =>
+    externalThreadId === null
+      ? Effect.void
+      : archiveCodexExternalThread(threadId, externalThreadId).pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.failCause(cause);
+            }
+            return Effect.logWarning("thread deletion cleanup could not archive codex rollout", {
+              threadId,
+              externalThreadId,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        );
+
   const cleanupThreadBeforePurge = Effect.fn(function* (
     threadId: ThreadDeletedEvent["payload"]["threadId"],
   ) {
+    const codexExternalThreadId = yield* readCodexExternalThreadIdForArchive(threadId);
     const providerCleanupSucceeded = yield* stopProviderSession(threadId);
     const terminalCleanupSucceeded = yield* closeThreadTerminals(threadId);
+    yield* archiveCodexExternalThreadUnlessInterrupted(threadId, codexExternalThreadId);
     return providerCleanupSucceeded && terminalCleanupSucceeded;
   });
 

@@ -19,7 +19,7 @@ function readTranscriptTextParts(value: unknown): ReadonlyArray<string> {
   });
 }
 
-function readCodexSnapshotMessageText(value: unknown): string {
+export function readCodexSnapshotMessageText(value: unknown): string {
   if (!value || typeof value !== "object") return "";
 
   const candidate = value as {
@@ -72,7 +72,7 @@ export function mapCodexSnapshotMessages(input: {
   );
 }
 
-function readClaudeSessionMessageText(value: unknown): string {
+export function readClaudeSessionMessageText(value: unknown): string {
   if (!value || typeof value !== "object") return typeof value === "string" ? value : "";
 
   const candidate = value as {

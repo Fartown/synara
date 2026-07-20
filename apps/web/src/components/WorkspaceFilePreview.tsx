@@ -584,6 +584,7 @@ export function WorkspaceFilePreview(props: WorkspaceFilePreviewProps) {
                 text={fileContents}
                 cwd={markdownPreviewCwd(props.workspaceRoot, filePath)}
                 isStreaming={false}
+                imageVariant="full"
                 className="editor-markdown-preview__body text-sm leading-relaxed"
                 {...(canToggleTasks ? { onTaskToggle: handleTaskToggle } : {})}
               />

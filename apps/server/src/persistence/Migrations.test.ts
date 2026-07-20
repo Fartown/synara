@@ -266,10 +266,12 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [70, "AgentGatewayOperations"],
         [71, "ProjectionThreadsGatewayProvenance"],
         [72, "AgentGatewayOperationRetention"],
+        [73, "ExternalAutoImportState"],
+        [74, "BackfillExternalImportThreadIds"],
       ]);
 
       const tracker = yield* trackerRows(sql);
-      assert.deepStrictEqual(tracker.slice(-19), [
+      assert.deepStrictEqual(tracker.slice(-21), [
         { migration_id: 54, name: "DurableProviderCommandDelivery" },
         { migration_id: 55, name: "ManagedAttachments" },
         { migration_id: 56, name: "CommandReceiptFingerprints" },
@@ -289,6 +291,8 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         { migration_id: 70, name: "AgentGatewayOperations" },
         { migration_id: 71, name: "ProjectionThreadsGatewayProvenance" },
         { migration_id: 72, name: "AgentGatewayOperationRetention" },
+        { migration_id: 73, name: "ExternalAutoImportState" },
+        { migration_id: 74, name: "BackfillExternalImportThreadIds" },
       ]);
       const preserved = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_consumer_state
@@ -351,7 +355,11 @@ agentGatewayRetentionLegacyLayer(
       `;
 
         const executed = yield* runMigrations();
-        assert.deepStrictEqual(executed, [[72, "AgentGatewayOperationRetention"]]);
+        assert.deepStrictEqual(executed, [
+          [72, "AgentGatewayOperationRetention"],
+          [73, "ExternalAutoImportState"],
+          [74, "BackfillExternalImportThreadIds"],
+        ]);
 
         const columns = yield* sql<{ readonly name: string }>`
         SELECT name FROM pragma_table_info('agent_gateway_operations')

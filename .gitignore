@@ -19,6 +19,7 @@ release/
 /apps/server/.synara-*/
 /.synara/
 /.synara-*/
+/.uitest/
 .idea/
 apps/web/.playwright
 apps/web/playwright-report

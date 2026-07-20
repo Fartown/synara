@@ -649,6 +649,20 @@ export function createWsNativeApi(): NativeApi {
         });
       },
       importThread: (input) => transport.request(ORCHESTRATION_WS_METHODS.importThread, input),
+      listExternalSessions: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.listExternalSessions, input),
+      previewExternalSession: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.previewExternalSession, input),
+      importExternalThreads: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.importExternalThreads, input, {
+          // A full batch of codex imports runs sequentially through the discovery
+          // app-server; the server owns the pace, so don't cap the wait client-side.
+          timeoutMs: null,
+        }),
+      getThreadExternalSession: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getThreadExternalSession, input),
+      resyncExternalThread: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.resyncExternalThread, input),
       repairState: () => transport.request(ORCHESTRATION_WS_METHODS.repairState),
       getTurnDiff: (input) => transport.request(ORCHESTRATION_WS_METHODS.getTurnDiff, input),
       getFullThreadDiff: (input) =>

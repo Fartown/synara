@@ -116,6 +116,7 @@ type SidebarThreadSortInput = {
   createdAt: string;
   updatedAt?: string | undefined;
   latestUserMessageAt?: string | null | undefined;
+  latestTurn?: { readonly completedAt: string | null } | null | undefined;
   messages?: ReadonlyArray<Pick<ChatMessage, "role" | "createdAt">> | undefined;
 };
 
@@ -1229,6 +1230,19 @@ function getThreadSortTimestamp(
   if (sortOrder === "created_at") {
     return toSortableTimestamp(thread.createdAt) ?? Number.NEGATIVE_INFINITY;
   }
+  if (sortOrder === "last_reply") {
+    // Last reply = the thread's latest completed turn; threads without one fall
+    // back to the last user message, then to generic recency.
+    const completedAt = toSortableTimestamp(thread.latestTurn?.completedAt ?? undefined);
+    if (completedAt !== null) {
+      return completedAt;
+    }
+    const latestUserMessageAt = toSortableTimestamp(thread.latestUserMessageAt ?? undefined);
+    if (latestUserMessageAt !== null) {
+      return latestUserMessageAt;
+    }
+    return getLatestUserMessageTimestamp(thread);
+  }
   return getLatestUserMessageTimestamp(thread);
 }
 
@@ -1494,3 +1508,42 @@ export function deriveSidebarProjectData(input: {
 // PR-state presentation (label/color/glyph) moved to
 // ~/components/pullRequest/pullRequestStatePresentation so the sidebar badge, kanban chip,
 // and the pull request feature surfaces all share one mapping.
+
+// Sidebar title filter (the search input at the top of the thread area). One shared
+// normalization + matcher so thread rows and discovered-session rows filter identically:
+// case-insensitive substring on the trimmed query; an empty/whitespace query passes
+// everything through.
+export function normalizeSidebarFilterQuery(query: string): string {
+  return query.trim().toLowerCase();
+}
+
+export function sidebarTitleMatchesFilter(title: string, normalizedQuery: string): boolean {
+  if (normalizedQuery.length === 0) {
+    return true;
+  }
+  return title.toLowerCase().includes(normalizedQuery);
+}
+
+export function filterSidebarThreadsByTitle<TItem extends { readonly title: string }>(
+  items: ReadonlyArray<TItem>,
+  query: string,
+): TItem[] {
+  const normalizedQuery = normalizeSidebarFilterQuery(query);
+  if (normalizedQuery.length === 0) {
+    return [...items];
+  }
+  return items.filter((item) => sidebarTitleMatchesFilter(item.title, normalizedQuery));
+}
+
+// While filtering, groups (project sections, discovered-session groups) with zero
+// visible rows are hidden entirely; non-empty groups keep their incoming order.
+export function pruneEmptySidebarGroups<TGroup>(
+  groups: ReadonlyArray<TGroup>,
+  visibleCount: (group: TGroup) => number,
+  isFiltering: boolean,
+): TGroup[] {
+  if (!isFiltering) {
+    return [...groups];
+  }
+  return groups.filter((group) => visibleCount(group) > 0);
+}

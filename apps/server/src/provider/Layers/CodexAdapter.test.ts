@@ -95,6 +95,10 @@ class FakeCodexManager extends CodexAppServerManager {
 
   public stopAllImpl = vi.fn(() => undefined);
 
+  public archiveExternalThreadImpl = vi.fn(
+    async (_input: { externalThreadId: string; cwd?: string }): Promise<void> => undefined,
+  );
+
   override startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
     return this.startSessionImpl(input);
   }
@@ -151,6 +155,10 @@ class FakeCodexManager extends CodexAppServerManager {
 
   override async stopAll(): Promise<void> {
     this.stopAllImpl();
+  }
+
+  override archiveExternalThread(input: { externalThreadId: string; cwd?: string }): Promise<void> {
+    return this.archiveExternalThreadImpl(input);
   }
 }
 
@@ -1336,6 +1344,60 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       assert.equal(firstEvent.value.payload.itemType, "context_compaction");
       assert.equal(firstEvent.value.payload.detail, "Compacting context");
       assert.equal(firstEvent.value.payload.status, "inProgress");
+    }),
+  );
+});
+
+const archiveManager = new FakeCodexManager();
+const archiveLayer = it.layer(
+  makeCodexAdapterLive({ manager: archiveManager }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+archiveLayer("CodexAdapterLive archiveExternalThread", (it) => {
+  it.effect("delegates to the manager with the external thread id", () =>
+    Effect.gen(function* () {
+      archiveManager.archiveExternalThreadImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      const archiveExternalThread = adapter.archiveExternalThread;
+      assert.ok(archiveExternalThread);
+
+      yield* archiveExternalThread({ externalThreadId: "thread-ext-1" });
+
+      assert.equal(archiveManager.archiveExternalThreadImpl.mock.calls.length, 1);
+      assert.deepStrictEqual(archiveManager.archiveExternalThreadImpl.mock.calls[0]?.[0], {
+        externalThreadId: "thread-ext-1",
+      });
+    }),
+  );
+
+  it.effect("maps manager failures to ProviderAdapterRequestError for thread/archive", () =>
+    Effect.gen(function* () {
+      archiveManager.archiveExternalThreadImpl.mockClear();
+      archiveManager.archiveExternalThreadImpl.mockImplementationOnce(async () => {
+        throw new Error("thread already archived");
+      });
+      const adapter = yield* CodexAdapter;
+      const archiveExternalThread = adapter.archiveExternalThread;
+      assert.ok(archiveExternalThread);
+
+      const result = yield* archiveExternalThread({ externalThreadId: "thread-ext-2" }).pipe(
+        Effect.result,
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") {
+        return;
+      }
+      assert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      if (result.failure._tag !== "ProviderAdapterRequestError") {
+        return;
+      }
+      assert.equal(result.failure.provider, "codex");
+      assert.equal(result.failure.method, "thread/archive");
     }),
   );
 });

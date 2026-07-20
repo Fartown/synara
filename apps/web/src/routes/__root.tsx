@@ -1013,17 +1013,8 @@ function EventRouter() {
       const removals = [...subscribedThreadIds].filter((threadId) => !nextThreadIds.has(threadId));
       const additions = [...nextThreadIds].filter((threadId) => !subscribedThreadIds.has(threadId));
 
-      // Start new detail snapshots first so route changes can paint from the hot thread cache.
-      for (const threadId of additions) {
-        beginThreadSubscription(threadId);
-        subscribedThreadIds.add(threadId);
-      }
-      await Promise.all(
-        additions.map((threadId) =>
-          api.orchestration.subscribeThread({ threadId }).catch(() => undefined),
-        ),
-      );
-
+      // Release departed leases before admitting replacements so the server-side
+      // per-client thread stream cap is never transiently overflowed by the swap.
       for (const threadId of removals) {
         threadSnapshotSequenceById.delete(threadId);
         pendingThreadEventsById.delete(threadId);
@@ -1034,6 +1025,17 @@ function EventRouter() {
       await Promise.all(
         removals.map((threadId) =>
           api.orchestration.unsubscribeThread({ threadId }).catch(() => undefined),
+        ),
+      );
+
+      // Start new detail snapshots so route changes can paint from the hot thread cache.
+      for (const threadId of additions) {
+        beginThreadSubscription(threadId);
+        subscribedThreadIds.add(threadId);
+      }
+      await Promise.all(
+        additions.map((threadId) =>
+          api.orchestration.subscribeThread({ threadId }).catch(() => undefined),
         ),
       );
     };

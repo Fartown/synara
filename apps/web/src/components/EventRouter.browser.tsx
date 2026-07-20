@@ -30,6 +30,7 @@ import {
   readEffectRpcClientMessage,
   sendEffectRpcChunk,
   sendEffectRpcExit,
+  sendEffectRpcFailure,
   type EffectRpcWebSocketClient,
 } from "../test/effectRpcWebSocketMock";
 import { createBrowserTestServerConfig, createFullscreenTestHost } from "../test/browserHarness";
@@ -54,6 +55,7 @@ let shellStreamClient: EffectRpcWebSocketClient | null = null;
 const threadStreamRequestIdByThreadId = new Map<ThreadId, string>();
 const threadStreamClientByThreadId = new Map<ThreadId, EffectRpcWebSocketClient>();
 let delayNextThreadSnapshot = false;
+let failNextThreadSubscribeWithCapacity = false;
 let subscribeShellRequestCount = 0;
 const subscribeThreadRequestCountById = new Map<ThreadId, number>();
 let subscribeThreadRequests: ThreadId[] = [];
@@ -263,6 +265,17 @@ const worker = setupWorker(
         subscribeThreadRequests.push(threadId);
         threadStreamRequestIdByThreadId.set(threadId, request.id);
         threadStreamClientByThreadId.set(threadId, client);
+        if (failNextThreadSubscribeWithCapacity) {
+          failNextThreadSubscribeWithCapacity = false;
+          sendEffectRpcFailure(client, request.id, {
+            _tag: "WsRpcError",
+            message: "Thread streaming RPC capacity exceeded.",
+            code: "THREAD_STREAM_CAPACITY_EXCEEDED",
+            retryable: true,
+            retryAfterMs: 50,
+          });
+          return;
+        }
         if (delayNextThreadSnapshot) {
           delayNextThreadSnapshot = false;
           return;
@@ -394,6 +407,7 @@ describe("EventRouter scoped orchestration sync", () => {
     threadStreamRequestIdByThreadId.clear();
     threadStreamClientByThreadId.clear();
     delayNextThreadSnapshot = false;
+    failNextThreadSubscribeWithCapacity = false;
     localStorage.clear();
     useComposerDraftStore.setState({
       draftsByThreadId: {},
@@ -939,6 +953,19 @@ describe("EventRouter scoped orchestration sync", () => {
           (entry) => entry.id === MessageId.makeUnsafe("msg-buffered-assistant"),
         ),
       ).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("retries a capacity-rejected thread subscription until the snapshot arrives", async () => {
+    failNextThreadSubscribeWithCapacity = true;
+    const mounted = await mountApp();
+
+    try {
+      // mountApp only resolves once every fixture message is hydrated, which the
+      // dead-end capacity rejection used to make impossible.
+      expect(subscribeThreadRequestCountById.get(THREAD_ID) ?? 0).toBeGreaterThanOrEqual(2);
     } finally {
       await mounted.cleanup();
     }

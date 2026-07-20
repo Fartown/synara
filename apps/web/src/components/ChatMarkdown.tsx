@@ -120,6 +120,12 @@ interface ChatMarkdownProps {
    * length- and newline-preserving). Without it checkboxes render read-only.
    */
   onTaskToggle?: ((input: { sourceLine: number; checked: boolean }) => void) | undefined;
+  /**
+   * Local markdown images render as small expandable thumbnails in chat
+   * (255px cap, meant for generated images). Document/file previews should
+   * pass "full" for a block-level, readable rendering instead.
+   */
+  imageVariant?: "thumbnail" | "full" | undefined;
 }
 
 // Source line of the enclosing task-list item, provided by the `li` override.
@@ -1022,6 +1028,7 @@ function ChatMarkdown({
   variant: variantProp,
   mentionReferences,
   terminalContexts,
+  imageVariant: imageVariantProp,
 }: ChatMarkdownProps) {
   // Defaults applied with ?? in the body, not in the destructuring: default
   // values in parameter destructuring make React Compiler 1.0.0 bail on the
@@ -1029,6 +1036,7 @@ function ChatMarkdown({
   const isStreaming = isStreamingProp ?? false;
   const className = classNameProp ?? "text-sm leading-relaxed";
   const variant = variantProp ?? "assistant";
+  const imageVariant = imageVariantProp ?? "thumbnail";
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const isUserVariant = variant === "user";
@@ -1180,6 +1188,7 @@ function ChatMarkdown({
               src={restoredSrc}
               alt={alt}
               cwd={cwd}
+              variant={imageVariant}
               onImageExpand={onImageExpand}
             />
           );
@@ -1243,6 +1252,7 @@ function ChatMarkdown({
     [
       cwd,
       diffThemeName,
+      imageVariant,
       isStreaming,
       isUserVariant,
       mentionReferences,

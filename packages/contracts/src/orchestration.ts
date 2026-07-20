@@ -33,6 +33,11 @@ export const ORCHESTRATION_WS_METHODS = {
   getShellSnapshot: "orchestration.getShellSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
   importThread: "orchestration.importThread",
+  listExternalSessions: "orchestration.listExternalSessions",
+  previewExternalSession: "orchestration.previewExternalSession",
+  importExternalThreads: "orchestration.importExternalThreads",
+  getThreadExternalSession: "orchestration.getThreadExternalSession",
+  resyncExternalThread: "orchestration.resyncExternalThread",
   repairState: "orchestration.repairState",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
@@ -927,6 +932,44 @@ export const ThreadHandoffImportedMessage = Schema.Struct({
 });
 export type ThreadHandoffImportedMessage = typeof ThreadHandoffImportedMessage.Type;
 
+/**
+ * Lifecycle state for a turn imported from a provider-native session. Imported
+ * turns are always terminal — "running"/"pending" would imply live lifecycle
+ * signals that a historical snapshot cannot produce.
+ */
+export const ThreadImportedTurnState = Schema.Literals(["completed", "interrupted", "error"]);
+export type ThreadImportedTurnState = typeof ThreadImportedTurnState.Type;
+
+/** A chat message belonging to an imported turn. The parent turn's id is applied on import. */
+export const ThreadImportedTurnMessage = Schema.Struct({
+  messageId: MessageId,
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ThreadImportedTurnMessage = typeof ThreadImportedTurnMessage.Type;
+
+/**
+ * One provider-native turn replayed into orchestration history: chat messages,
+ * tool/reasoning activities, and proposed plans, plus the turn lifecycle row
+ * itself. There is intentionally no checkpoint data — historical turns have no
+ * workspace snapshots, so diff/checkpoint fields stay absent.
+ */
+export const ThreadImportedTurn = Schema.Struct({
+  turnId: TurnId,
+  state: ThreadImportedTurnState,
+  userMessageId: Schema.NullOr(MessageId),
+  assistantMessageId: Schema.NullOr(MessageId),
+  requestedAt: IsoDateTime,
+  startedAt: IsoDateTime,
+  completedAt: IsoDateTime,
+  messages: Schema.Array(ThreadImportedTurnMessage),
+  activities: Schema.Array(OrchestrationThreadActivity),
+  proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type ThreadImportedTurn = typeof ThreadImportedTurn.Type;
+
 const ThreadHandoffCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.handoff.create"),
   commandId: CommandId,
@@ -1345,6 +1388,9 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  // Provider-native session/thread id, set only when binding an external (imported)
+  // session; projected into projection_thread_sessions.provider_thread_id.
+  externalSessionId: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 
@@ -1353,6 +1399,14 @@ const ThreadMessagesImportCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messages: Schema.Array(ThreadHandoffImportedMessage),
+  createdAt: IsoDateTime,
+});
+
+const ThreadHistoryImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.history.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turns: Schema.Array(ThreadImportedTurn),
   createdAt: IsoDateTime,
 });
 
@@ -1420,6 +1474,7 @@ const ThreadConversationRollbackCompleteCommand = Schema.Struct({
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessagesImportCommand,
+  ThreadHistoryImportCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -1475,6 +1530,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-set",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
+  "thread.turn-imported",
   "thread.activity-appended",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
@@ -1795,6 +1851,7 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  externalSessionId: Schema.optional(Schema.String),
 });
 
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
@@ -1817,6 +1874,23 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
 export const ThreadActivityAppendedPayload = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
+});
+
+/**
+ * Terminal lifecycle record for one imported provider-native turn. Emitted by
+ * the history-import decider instead of abusing live turn-start events, so
+ * reactors never see it as a live turn request. Checkpoint fields are absent
+ * by design: historical turns have no workspace snapshots.
+ */
+export const ThreadTurnImportedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: ThreadImportedTurnState,
+  userMessageId: Schema.NullOr(MessageId),
+  assistantMessageId: Schema.NullOr(MessageId),
+  requestedAt: IsoDateTime,
+  startedAt: IsoDateTime,
+  completedAt: IsoDateTime,
 });
 
 export const OrchestrationEventMetadata = Schema.Struct({
@@ -2015,6 +2089,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-diff-completed"),
     payload: ThreadTurnDiffCompletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-imported"),
+    payload: ThreadTurnImportedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2218,13 +2297,133 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 export const OrchestrationImportThreadInput = Schema.Struct({
   threadId: ThreadId,
   externalId: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
 });
 export type OrchestrationImportThreadInput = typeof OrchestrationImportThreadInput.Type;
 
 export const OrchestrationImportThreadResult = Schema.Struct({
   threadId: ThreadId,
+  alreadyImported: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationImportThreadResult = typeof OrchestrationImportThreadResult.Type;
+
+export const OrchestrationExternalSessionProvider = Schema.Literals(["codex", "claudeAgent"]);
+export type OrchestrationExternalSessionProvider = typeof OrchestrationExternalSessionProvider.Type;
+
+export const OrchestrationExternalSession = Schema.Struct({
+  provider: OrchestrationExternalSessionProvider,
+  externalId: TrimmedNonEmptyString,
+  cwd: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  updatedAt: Schema.NullOr(Schema.String),
+  createdAt: Schema.NullOr(Schema.String),
+  source: Schema.NullOr(Schema.String),
+  importedThreadId: Schema.NullOr(ThreadId),
+});
+export type OrchestrationExternalSession = typeof OrchestrationExternalSession.Type;
+
+export const OrchestrationListExternalSessionsInput = Schema.Struct({
+  providers: Schema.optional(Schema.Array(OrchestrationExternalSessionProvider)),
+  forceRefresh: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationListExternalSessionsInput =
+  typeof OrchestrationListExternalSessionsInput.Type;
+
+export const OrchestrationListExternalSessionsResult = Schema.Struct({
+  sessions: Schema.Array(OrchestrationExternalSession),
+});
+export type OrchestrationListExternalSessionsResult =
+  typeof OrchestrationListExternalSessionsResult.Type;
+
+export const OrchestrationPreviewExternalSessionInput = Schema.Struct({
+  provider: OrchestrationExternalSessionProvider,
+  externalId: TrimmedNonEmptyString,
+  cwd: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationPreviewExternalSessionInput =
+  typeof OrchestrationPreviewExternalSessionInput.Type;
+
+export const OrchestrationPreviewExternalSessionResult = Schema.Struct({
+  turns: Schema.Array(ThreadImportedTurn),
+  totalTurns: NonNegativeInt,
+  truncated: Schema.Boolean,
+});
+export type OrchestrationPreviewExternalSessionResult =
+  typeof OrchestrationPreviewExternalSessionResult.Type;
+
+export const IMPORT_EXTERNAL_THREADS_MAX_BATCH_SIZE = 50;
+
+export const OrchestrationImportExternalThreadsItem = Schema.Struct({
+  provider: OrchestrationExternalSessionProvider,
+  externalId: TrimmedNonEmptyString,
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+});
+export type OrchestrationImportExternalThreadsItem =
+  typeof OrchestrationImportExternalThreadsItem.Type;
+
+export const OrchestrationImportExternalThreadsInput = Schema.Struct({
+  items: Schema.Array(OrchestrationImportExternalThreadsItem)
+    .check(Schema.isMinLength(1))
+    .check(Schema.isMaxLength(IMPORT_EXTERNAL_THREADS_MAX_BATCH_SIZE)),
+});
+export type OrchestrationImportExternalThreadsInput =
+  typeof OrchestrationImportExternalThreadsInput.Type;
+
+export const OrchestrationImportExternalThreadsItemStatus = Schema.Literals([
+  "imported",
+  "alreadyImported",
+  "failed",
+]);
+export type OrchestrationImportExternalThreadsItemStatus =
+  typeof OrchestrationImportExternalThreadsItemStatus.Type;
+
+export const OrchestrationImportExternalThreadsItemResult = Schema.Struct({
+  externalId: TrimmedNonEmptyString,
+  status: OrchestrationImportExternalThreadsItemStatus,
+  threadId: Schema.optional(ThreadId),
+  error: Schema.optional(Schema.String),
+});
+export type OrchestrationImportExternalThreadsItemResult =
+  typeof OrchestrationImportExternalThreadsItemResult.Type;
+
+export const OrchestrationImportExternalThreadsResult = Schema.Struct({
+  results: Schema.Array(OrchestrationImportExternalThreadsItemResult),
+});
+export type OrchestrationImportExternalThreadsResult =
+  typeof OrchestrationImportExternalThreadsResult.Type;
+
+export const OrchestrationGetThreadExternalSessionInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationGetThreadExternalSessionInput =
+  typeof OrchestrationGetThreadExternalSessionInput.Type;
+
+export const OrchestrationThreadExternalSession = Schema.Struct({
+  provider: OrchestrationExternalSessionProvider,
+  externalId: TrimmedNonEmptyString,
+  resumeCommand: TrimmedNonEmptyString,
+});
+export type OrchestrationThreadExternalSession = typeof OrchestrationThreadExternalSession.Type;
+
+export const OrchestrationGetThreadExternalSessionResult = Schema.NullOr(
+  OrchestrationThreadExternalSession,
+);
+export type OrchestrationGetThreadExternalSessionResult =
+  typeof OrchestrationGetThreadExternalSessionResult.Type;
+
+export const OrchestrationResyncExternalThreadInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationResyncExternalThreadInput =
+  typeof OrchestrationResyncExternalThreadInput.Type;
+
+export const OrchestrationResyncExternalThreadResult = Schema.Struct({
+  threadId: ThreadId,
+  importedTurns: NonNegativeInt,
+});
+export type OrchestrationResyncExternalThreadResult =
+  typeof OrchestrationResyncExternalThreadResult.Type;
 
 export const OrchestrationUnsubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
@@ -2251,6 +2450,26 @@ export const OrchestrationRpcSchemas = {
   importThread: {
     input: OrchestrationImportThreadInput,
     output: OrchestrationImportThreadResult,
+  },
+  listExternalSessions: {
+    input: OrchestrationListExternalSessionsInput,
+    output: OrchestrationListExternalSessionsResult,
+  },
+  previewExternalSession: {
+    input: OrchestrationPreviewExternalSessionInput,
+    output: OrchestrationPreviewExternalSessionResult,
+  },
+  importExternalThreads: {
+    input: OrchestrationImportExternalThreadsInput,
+    output: OrchestrationImportExternalThreadsResult,
+  },
+  getThreadExternalSession: {
+    input: OrchestrationGetThreadExternalSessionInput,
+    output: OrchestrationGetThreadExternalSessionResult,
+  },
+  resyncExternalThread: {
+    input: OrchestrationResyncExternalThreadInput,
+    output: OrchestrationResyncExternalThreadResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,

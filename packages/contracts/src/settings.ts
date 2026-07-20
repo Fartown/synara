@@ -90,6 +90,14 @@ export const SkillsServerSettings = Schema.Struct({
 });
 export type SkillsServerSettings = typeof SkillsServerSettings.Type;
 
+// Auto-import of newly discovered external sessions is opt-in: it creates threads
+// without an explicit user action, so it defaults off (design doc
+// docs/plans/external-session-preview-bulk-auto-import.md §5).
+export const ExternalSessionsServerSettings = Schema.Struct({
+  autoImportEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+});
+export type ExternalSessionsServerSettings = typeof ExternalSessionsServerSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
@@ -113,6 +121,7 @@ export const ServerSettings = Schema.Struct({
     pi: PiServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   skills: SkillsServerSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  externalSessions: ExternalSessionsServerSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -195,6 +204,11 @@ export const ServerSettingsPatch = Schema.Struct({
   skills: Schema.optionalKey(
     Schema.Struct({
       disabled: Schema.optionalKey(Schema.Array(Schema.String.check(Schema.isMaxLength(256)))),
+    }),
+  ),
+  externalSessions: Schema.optionalKey(
+    Schema.Struct({
+      autoImportEnabled: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 });

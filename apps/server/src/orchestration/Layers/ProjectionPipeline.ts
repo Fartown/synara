@@ -173,6 +173,7 @@ const THREAD_TURN_PROJECTION_EVENT_TYPES = new Set<OrchestrationEvent["type"]>([
   "thread.turn-start-requested",
   "thread.session-set",
   "thread.turn-diff-completed",
+  "thread.turn-imported",
   "thread.reverted",
   "thread.conversation-rolled-back",
 ]);
@@ -811,7 +812,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         }
 
         case "thread.session-set":
-        case "thread.turn-diff-completed": {
+        case "thread.turn-diff-completed":
+        case "thread.turn-imported": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
@@ -824,9 +826,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
               latestTurnId:
                 event.type === "thread.session-set"
                   ? event.payload.session.activeTurnId
-                  : event.payload.preserveLatestTurn
-                    ? existingRow.value.latestTurnId
-                    : event.payload.turnId,
+                  : event.type === "thread.turn-imported"
+                    ? event.payload.turnId
+                    : event.payload.preserveLatestTurn
+                      ? existingRow.value.latestTurnId
+                      : event.payload.turnId,
               updatedAt: event.occurredAt,
             },
             projectionThreadProposedPlanRepository,
@@ -1074,6 +1078,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         activeTurnId: event.payload.session.activeTurnId,
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
+        // Only import binds carry the provider-native id; the upsert keeps any
+        // previously stored value when this is null.
+        providerThreadId: event.payload.externalSessionId ?? null,
       });
     });
 
@@ -1274,6 +1281,28 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
 
         case "thread.task-background-requested": {
           // Intent only: the provider confirms via a task_updated backgrounded patch.
+          return;
+        }
+
+        case "thread.turn-imported": {
+          // Historical turns arrive terminal and without workspace snapshots:
+          // checkpoint fields stay null so diff/revert flows never see them.
+          yield* projectionTurnRepository.upsertByTurnId({
+            turnId: event.payload.turnId,
+            threadId: event.payload.threadId,
+            pendingMessageId: event.payload.userMessageId,
+            sourceProposedPlanThreadId: null,
+            sourceProposedPlanId: null,
+            assistantMessageId: event.payload.assistantMessageId,
+            state: event.payload.state,
+            requestedAt: event.payload.requestedAt,
+            startedAt: event.payload.startedAt,
+            completedAt: event.payload.completedAt,
+            checkpointTurnCount: null,
+            checkpointRef: null,
+            checkpointStatus: null,
+            checkpointFiles: [],
+          });
           return;
         }
 

@@ -36,6 +36,7 @@ import { makeServerApplicationLayers } from "./serverLayers";
 import { startServerMemoryDiagnostics } from "./memoryDiagnostics";
 import { startClaudeCredentialKeepalive } from "./provider/claudeCredentialKeepalive";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { ExternalAutoImporterLive } from "./orchestration/Layers/ExternalAutoImporter";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper";
 import { Server } from "./effectServer";
 import { ServerLoggerLive } from "./serverLogger";
@@ -265,11 +266,18 @@ const LayerLive = (input: CliInput) => {
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(providerLayer),
   );
+  const externalAutoImporterLayer = ExternalAutoImporterLive.pipe(
+    // The auto-importer drives discovery, orchestration commands, and provider
+    // sessions, so it needs the same top-level layers as the reaper.
+    Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(providerLayer),
+  );
 
   return Layer.empty.pipe(
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(providerLayer),
     Layer.provideMerge(providerSessionReaperLayer),
+    Layer.provideMerge(externalAutoImporterLayer),
     Layer.provideMerge(SqlitePersistence.layerConfig),
     Layer.provideMerge(ServerLoggerLive),
     Layer.provideMerge(AnalyticsServiceLayerLive),

@@ -1543,6 +1543,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           session: command.session,
+          ...(command.externalSessionId !== undefined
+            ? { externalSessionId: command.externalSessionId }
+            : {}),
         },
       };
     }
@@ -1574,6 +1577,109 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: message.updatedAt,
         },
       }));
+    }
+
+    case "thread.history.import": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (command.turns.length === 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "History import must contain at least one turn.",
+        });
+      }
+      // Replays provider-native history through the same message/activity/plan
+      // events live turns produce, plus terminal turn records. The dedicated
+      // thread.turn-imported event (not thread.turn-start-requested) keeps
+      // ProviderCommandReactor from treating replayed turns as live work, and
+      // every message carries its turn id so CheckpointReactor's turnId ===
+      // null baseline-capture guard skips historical user messages. No
+      // checkpoint/diff events are emitted: imported turns have no workspace
+      // snapshots, so fabricating refs would be fake data.
+      const events: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      for (const turn of command.turns) {
+        for (const message of turn.messages) {
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.message-sent" as const,
+            payload: {
+              threadId: command.threadId,
+              messageId: message.messageId,
+              role: message.role,
+              text: message.text,
+              turnId: turn.turnId,
+              streaming: false,
+              source: "native" as const,
+              createdAt: message.createdAt,
+              updatedAt: message.updatedAt,
+            },
+          });
+        }
+        for (const activity of turn.activities) {
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.activity-appended" as const,
+            payload: {
+              threadId: command.threadId,
+              activity: {
+                ...activity,
+                turnId: turn.turnId,
+              },
+            },
+          });
+        }
+        for (const proposedPlan of turn.proposedPlans) {
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.proposed-plan-upserted" as const,
+            payload: {
+              threadId: command.threadId,
+              proposedPlan: {
+                ...proposedPlan,
+                turnId: turn.turnId,
+              },
+            },
+          });
+        }
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.turn-imported" as const,
+          payload: {
+            threadId: command.threadId,
+            turnId: turn.turnId,
+            state: turn.state,
+            userMessageId: turn.userMessageId,
+            assistantMessageId: turn.assistantMessageId,
+            requestedAt: turn.requestedAt,
+            startedAt: turn.startedAt,
+            completedAt: turn.completedAt,
+          },
+        });
+      }
+      return events;
     }
 
     case "thread.message.assistant.delta": {

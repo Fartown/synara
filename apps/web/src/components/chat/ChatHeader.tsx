@@ -62,6 +62,7 @@ import { useOpenFavoriteEditorShortcut } from "~/hooks/useOpenFavoriteEditorShor
 import type { RepoDiffTotals } from "~/hooks/useRepoDiffTotals";
 import { ProviderIcon } from "../ProviderIcon";
 import { ProviderUsageMenuControl } from "../ProviderUsageMenuControl";
+import { ThreadExternalSessionBadge } from "./ThreadExternalSessionBadge";
 import { EnvironmentToggle, type EnvironmentToggleState } from "./environment/EnvironmentToggle";
 
 /**
@@ -751,6 +752,7 @@ export function ChatHeader({
                   <TooltipPopup side="bottom">{handoffBadgeLabel}</TooltipPopup>
                 </Tooltip>
               ) : null}
+              <ThreadExternalSessionBadge threadId={activeThreadId} />
             </div>
           </div>
         </div>

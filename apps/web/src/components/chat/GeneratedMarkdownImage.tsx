@@ -11,6 +11,7 @@
 import { type MouseEvent } from "react";
 
 import { DownloadIcon, Loader2Icon, Maximize2 } from "~/lib/icons";
+import { cn } from "~/lib/utils";
 
 import {
   LocalImageErrorCard,
@@ -23,6 +24,11 @@ export interface GeneratedMarkdownImageProps {
   src: string;
   alt: string;
   cwd: string | undefined;
+  /**
+   * "thumbnail" (default) caps the image at 255px for chat-generated images;
+   * "full" renders block-level and readable for document previews.
+   */
+  variant?: "thumbnail" | "full" | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
 }
 
@@ -31,7 +37,7 @@ function stopPropagation(event: MouseEvent<HTMLElement>) {
 }
 
 export function GeneratedMarkdownImage(props: GeneratedMarkdownImageProps) {
-  const { src, alt, cwd, onImageExpand } = props;
+  const { src, alt, cwd, onImageExpand, variant = "thumbnail" } = props;
   const { previewUrl, downloadUrl, fileName, downloadName, status, imgProps } =
     useLocalImagePreview({ src, cwd });
   const accessibleName = alt?.trim() || "Generated image";
@@ -65,7 +71,13 @@ export function GeneratedMarkdownImage(props: GeneratedMarkdownImageProps) {
   }
 
   return (
-    <span className="chat-generated-image" data-status={status}>
+    <span
+      className={cn(
+        "chat-generated-image",
+        variant === "full" ? "chat-generated-image--full" : undefined,
+      )}
+      data-status={status}
+    >
       <button
         type="button"
         className="chat-generated-image__frame"

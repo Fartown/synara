@@ -32,6 +32,7 @@ import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReac
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor";
 import { reconcileRestartStuckTurns } from "./orchestration/startupTurnReconciliation";
+import { ExternalAutoImporter } from "./orchestration/Services/ExternalAutoImporter";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents";
@@ -61,6 +62,7 @@ export interface ServerShape {
     | OrchestrationReactor
     | ProjectionSnapshotQuery
     | ProviderSessionReaper
+    | ExternalAutoImporter
     | ProviderService
     | ServerRuntimeStartup
     | ServerSettingsService
@@ -119,6 +121,7 @@ export const createEffectServer = Effect.fn(function* () {
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerService = yield* ProviderService;
   const providerSessionReaper = yield* ProviderSessionReaper;
+  const externalAutoImporter = yield* ExternalAutoImporter;
   const runtimeStartup = yield* ServerRuntimeStartup;
   const serverSettings = yield* ServerSettingsService;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
@@ -194,6 +197,7 @@ export const createEffectServer = Effect.fn(function* () {
   yield* Scope.provide(automationRunReactor.start(), subscriptionsScope);
   yield* Scope.provide(threadDeletionReactor.start(), subscriptionsScope);
   yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
+  yield* Scope.provide(externalAutoImporter.start(), subscriptionsScope);
   yield* readiness.markOrchestrationSubscriptionsReady;
   yield* readiness.markTerminalSubscriptionsReady;
   // Heal turns orphaned by the previous process exit (their in-memory runtimes

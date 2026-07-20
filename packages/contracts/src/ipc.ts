@@ -152,12 +152,22 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationImportThreadInput,
   OrchestrationImportThreadResult,
+  OrchestrationImportExternalThreadsInput,
+  OrchestrationImportExternalThreadsResult,
   OrchestrationListProviderDeliveryBlockersInput,
   OrchestrationListProviderDeliveryBlockersResult,
   OrchestrationReconcileProviderDeliveryInput,
   OrchestrationReconcileProviderDeliveryResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
+  OrchestrationGetThreadExternalSessionInput,
+  OrchestrationGetThreadExternalSessionResult,
+  OrchestrationListExternalSessionsInput,
+  OrchestrationListExternalSessionsResult,
+  OrchestrationPreviewExternalSessionInput,
+  OrchestrationPreviewExternalSessionResult,
+  OrchestrationResyncExternalThreadInput,
+  OrchestrationResyncExternalThreadResult,
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -661,6 +671,21 @@ export interface NativeApi {
     importThread: (
       input: OrchestrationImportThreadInput,
     ) => Promise<OrchestrationImportThreadResult>;
+    listExternalSessions: (
+      input?: OrchestrationListExternalSessionsInput,
+    ) => Promise<OrchestrationListExternalSessionsResult>;
+    previewExternalSession: (
+      input: OrchestrationPreviewExternalSessionInput,
+    ) => Promise<OrchestrationPreviewExternalSessionResult>;
+    importExternalThreads: (
+      input: OrchestrationImportExternalThreadsInput,
+    ) => Promise<OrchestrationImportExternalThreadsResult>;
+    getThreadExternalSession: (
+      input: OrchestrationGetThreadExternalSessionInput,
+    ) => Promise<OrchestrationGetThreadExternalSessionResult>;
+    resyncExternalThread: (
+      input: OrchestrationResyncExternalThreadInput,
+    ) => Promise<OrchestrationResyncExternalThreadResult>;
     repairState: () => Promise<OrchestrationReadModel>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (

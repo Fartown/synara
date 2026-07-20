@@ -325,6 +325,7 @@ describe("wsNativeApi", () => {
           pi: { enabled: true, binaryPath: "pi", agentDir: "", customModels: [] },
         },
         skills: { disabled: [] },
+        externalSessions: { autoImportEnabled: false },
       },
     } as const;
     emitPush(WS_CHANNELS.serverSettingsUpdated, payload);
@@ -723,6 +724,18 @@ describe("wsNativeApi", () => {
     expect(requestMock).toHaveBeenCalledWith(ORCHESTRATION_WS_METHODS.getFullThreadDiff, {
       threadId: "thread-1",
       toTurnCount: 1,
+    });
+  });
+
+  it("forwards external thread resync requests to the orchestration websocket method", async () => {
+    requestMock.mockResolvedValue({ threadId: "thread-1", importedTurns: 3 });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    await api.orchestration.resyncExternalThread({ threadId: ThreadId.makeUnsafe("thread-1") });
+
+    expect(requestMock).toHaveBeenCalledWith(ORCHESTRATION_WS_METHODS.resyncExternalThread, {
+      threadId: "thread-1",
     });
   });
 

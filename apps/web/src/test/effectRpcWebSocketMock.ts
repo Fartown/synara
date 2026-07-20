@@ -114,6 +114,23 @@ export function sendEffectRpcChunk(
   );
 }
 
+export function sendEffectRpcFailure(
+  client: EffectRpcWebSocketClient,
+  requestId: string,
+  error: unknown,
+): void {
+  client.send(
+    JSON.stringify({
+      _tag: "Exit",
+      requestId,
+      exit: {
+        _tag: "Failure",
+        cause: [{ _tag: "Fail", error }],
+      },
+    }),
+  );
+}
+
 export function flattenEffectRpcRequestPayload(
   tag: string,
   payload: unknown,

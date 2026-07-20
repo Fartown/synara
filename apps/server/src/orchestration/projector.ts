@@ -46,6 +46,7 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnImportedPayload,
   ThreadTurnStartRequestedPayload,
 } from "./Schemas.ts";
 import { resolveStableMessageTurnId } from "./messageTurnId.ts";
@@ -1122,6 +1123,34 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.turn-imported":
+      return decodeForEvent(ThreadTurnImportedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+
+          // Import events are emitted oldest-first, so the last one applied is
+          // the newest historical turn. Live turns always supersede later via
+          // their own session/diff events.
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              latestTurn: {
+                turnId: payload.turnId,
+                state: payload.state,
+                requestedAt: payload.requestedAt,
+                startedAt: payload.startedAt,
+                completedAt: payload.completedAt,
+                assistantMessageId: payload.assistantMessageId,
+              },
               updatedAt: event.occurredAt,
             }),
           };

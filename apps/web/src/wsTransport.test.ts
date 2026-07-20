@@ -20,6 +20,7 @@ import {
   isTerminalCompatibilityFailure,
   makeFeatureSocketUrl,
   makeRequestAbortScope,
+  resolveRetryableStreamAdmissionFailure,
   shouldReconnectAfterStreamFailure,
   WsTransport,
 } from "./wsTransport";
@@ -127,6 +128,41 @@ describe("WsTransport", () => {
         retryable: false,
       }),
     ).toBe(true);
+  });
+
+  it("re-arms capacity-rejected streams in place with the server retry delay", () => {
+    expect(
+      resolveRetryableStreamAdmissionFailure(
+        Cause.fail({
+          code: "THREAD_STREAM_CAPACITY_EXCEEDED",
+          retryable: true,
+          retryAfterMs: 1_000,
+        }),
+      ),
+    ).toEqual({ code: "THREAD_STREAM_CAPACITY_EXCEEDED", retryAfterMs: 1_000 });
+    expect(
+      resolveRetryableStreamAdmissionFailure(
+        Cause.fail({ code: "STREAM_CAPACITY_EXCEEDED", retryable: true }),
+      ),
+    ).toEqual({ code: "STREAM_CAPACITY_EXCEEDED", retryAfterMs: 1_000 });
+    // Absurdly small server hints are clamped to avoid a hot retry loop.
+    expect(
+      resolveRetryableStreamAdmissionFailure(
+        Cause.fail({ code: "STREAM_CAPACITY_EXCEEDED", retryable: true, retryAfterMs: 0 }),
+      ),
+    ).toEqual({ code: "STREAM_CAPACITY_EXCEEDED", retryAfterMs: 50 });
+    // Explicitly non-retryable capacity errors and other admission failures stay terminal.
+    expect(
+      resolveRetryableStreamAdmissionFailure(
+        Cause.fail({ code: "THREAD_STREAM_CAPACITY_EXCEEDED", retryable: false }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveRetryableStreamAdmissionFailure(
+        Cause.fail({ code: "STREAM_DUPLICATE_SUBSCRIPTION", retryable: false }),
+      ),
+    ).toBeNull();
+    expect(resolveRetryableStreamAdmissionFailure(Cause.fail(new Error("transient")))).toBeNull();
   });
 
   it("latches terminal compatibility guidance for late UI subscribers", () => {

@@ -1,6 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -253,6 +254,74 @@ export interface CodexThreadSnapshot {
   threadId: string;
   turns: CodexThreadTurnSnapshot[];
   cwd?: string | null;
+}
+
+export interface CodexExternalThreadSummary {
+  readonly id: string;
+  readonly preview: string;
+  readonly cwd?: string;
+  readonly modelProvider?: string;
+  readonly source?: string;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+}
+
+export interface CodexExternalThreadListPage {
+  readonly threads: ReadonlyArray<CodexExternalThreadSummary>;
+  readonly nextCursor: string | null;
+}
+
+function asTimestampString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim().length > 0 ? value : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    // Codex timestamps are ISO strings today; tolerate epoch seconds/millis so a
+    // protocol change degrades to a converted value instead of dropping the field.
+    const millis = value > 1_000_000_000_000 ? value : value * 1000;
+    return new Date(millis).toISOString();
+  }
+  return undefined;
+}
+
+function parseCodexExternalThreadSummary(value: unknown): CodexExternalThreadSummary | undefined {
+  const record = asObject(value);
+  const id = asString(record?.id)?.trim();
+  if (!id) {
+    return undefined;
+  }
+  const preview = asString(record?.preview) ?? "";
+  const cwd = asString(record?.cwd)?.trim();
+  const modelProvider = asString(record?.modelProvider)?.trim();
+  const sourceRecord = record?.source;
+  const source = asString(sourceRecord)?.trim() ?? asString(asObject(sourceRecord)?.type)?.trim();
+  const createdAt = asTimestampString(record?.createdAt);
+  const updatedAt = asTimestampString(record?.updatedAt);
+  return {
+    id,
+    preview,
+    ...(cwd ? { cwd } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
+    ...(source ? { source } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+  };
+}
+
+/**
+ * Parse one `thread/list` response page. Entries without a string id are skipped so
+ * a single malformed row never fails the whole discovery call.
+ */
+export function parseCodexThreadListPage(response: unknown): CodexExternalThreadListPage {
+  const record = asObject(response);
+  const data = Array.isArray(record?.data) ? record.data : [];
+  const threads = data
+    .map(parseCodexExternalThreadSummary)
+    .filter((thread): thread is CodexExternalThreadSummary => thread !== undefined);
+  const nextCursorRaw = record?.nextCursor;
+  const nextCursor =
+    typeof nextCursorRaw === "string" && nextCursorRaw.trim().length > 0 ? nextCursorRaw : null;
+  return { threads, nextCursor };
 }
 
 const CODEX_VERSION_CHECK_TIMEOUT_MS = 4_000;
@@ -843,7 +912,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         await this.stopSession(threadId);
       }
 
-      const resolvedCwd = input.cwd ?? ensureIsolatedScratchWorkspace(threadId);
+      // A resumed external session can point at a directory the user has since
+      // deleted; spawning with a nonexistent cwd fails outright. The rollout
+      // store is global to CODEX_HOME, so fall back to a cwd that exists —
+      // the thread still resumes by id, just in a different working directory.
+      let resolvedCwd = input.cwd ?? ensureIsolatedScratchWorkspace(threadId);
+      if (!existsSync(resolvedCwd)) {
+        const fallbackCwd = process.env.HOME?.trim() || process.cwd();
+        log.warn("session cwd does not exist; falling back", {
+          threadId,
+          requestedCwd: resolvedCwd,
+          fallbackCwd,
+        });
+        resolvedCwd = fallbackCwd;
+      }
 
       const session: ProviderSession = {
         provider: "codex",
@@ -1444,13 +1526,69 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   async readExternalThread(input: {
     externalThreadId: string;
     cwd?: string;
+    providerOptions?: ProviderSessionStartInput["providerOptions"];
   }): Promise<CodexThreadSnapshot> {
-    const context = await this.resolveContextForDiscovery(undefined, input.cwd);
+    const context = await this.resolveContextForDiscovery(
+      undefined,
+      input.cwd,
+      readCodexProviderOptions(input),
+    );
     const response = await this.sendRequest(context, "thread/read", {
       threadId: input.externalThreadId,
       includeTurns: true,
     });
     return this.parseThreadSnapshot("thread/read", response);
+  }
+
+  async listExternalThreads(input: {
+    cwd?: string;
+    cursor?: string;
+    limit?: number;
+    providerOptions?: ProviderSessionStartInput["providerOptions"];
+  }): Promise<CodexExternalThreadListPage> {
+    const context = await this.resolveContextForDiscovery(
+      undefined,
+      input.cwd,
+      readCodexProviderOptions(input),
+    );
+    const limit = input.limit ?? 100;
+    const fetchPage = async (cursor?: string): Promise<CodexExternalThreadListPage> => {
+      const response = await this.sendRequest(context, "thread/list", {
+        limit,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+        ...(cursor ? { cursor } : {}),
+      });
+      return parseCodexThreadListPage(response);
+    };
+
+    const firstPage = await fetchPage(input.cursor);
+    if (input.cursor || !firstPage.nextCursor) {
+      return firstPage;
+    }
+
+    // Aggregate discovery (no caller cursor): pull one extra page so a single call
+    // returns a useful set without hammering the app server (openai/codex#22411).
+    const secondPage = await fetchPage(firstPage.nextCursor);
+    const seen = new Set(firstPage.threads.map((thread) => thread.id));
+    const merged = [
+      ...firstPage.threads,
+      ...secondPage.threads.filter((thread) => !seen.has(thread.id)),
+    ];
+    return {
+      threads: merged.slice(0, 200),
+      nextCursor: secondPage.nextCursor,
+    };
+  }
+
+  // Archives a persisted rollout via a discovery context (never a thread-bound
+  // session): thread/archive only moves files under CODEX_HOME, so any context
+  // can service it. Callers treat failures as best-effort (e.g. thread deletion).
+  async archiveExternalThread(input: { externalThreadId: string; cwd?: string }): Promise<void> {
+    const context = await this.resolveContextForDiscovery(undefined, input.cwd);
+    await this.sendRequest(context, "thread/archive", {
+      threadId: input.externalThreadId,
+    });
   }
 
   async forkThread(input: ProviderForkThreadInput): Promise<ProviderForkThreadResult> {
@@ -1486,10 +1624,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       };
 
       const codexOptions = readCodexProviderOptions({
-        threadId,
         ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
-        runtimeMode: input.runtimeMode,
-        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
       });
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
       const codexHomePath = codexOptions.homePath;
@@ -2048,6 +2183,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   private async resolveContextForDiscovery(
     threadId?: string,
     cwd?: string,
+    options?: {
+      readonly binaryPath?: string;
+      readonly homePath?: string;
+    },
   ): Promise<CodexSessionContext> {
     const normalizedThreadId = threadId?.trim();
     const normalizedCwd = cwd?.trim() || undefined;
@@ -2073,13 +2212,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           return activeSession;
         }
       }
-      return this.getOrCreateDiscoverySession(normalizedCwd);
+      return this.getOrCreateDiscoverySession(normalizedCwd, options);
     }
     const firstActive = this.sessions.values().next().value;
     if (firstActive) {
       return firstActive;
     }
-    return this.getOrCreateDiscoverySession(process.cwd());
+    return this.getOrCreateDiscoverySession(process.cwd(), options);
   }
 
   private async resolveVoiceTranscriptionAuth(input: {
@@ -2120,8 +2259,26 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
   }
 
-  private async getOrCreateDiscoverySession(cwd: string): Promise<CodexSessionContext> {
-    const normalizedCwd = cwd.trim() || process.cwd();
+  private async getOrCreateDiscoverySession(
+    cwd: string,
+    options?: {
+      readonly binaryPath?: string;
+      readonly homePath?: string;
+    },
+  ): Promise<CodexSessionContext> {
+    // Sessions discovered from external stores can point at directories that no
+    // longer exist; spawning a child with a nonexistent cwd fails outright, so
+    // fall back to a cwd that exists (the rollout store is global to CODEX_HOME
+    // and thread reads are id-based, so any valid cwd works).
+    let normalizedCwd = cwd.trim() || process.cwd();
+    if (!existsSync(normalizedCwd)) {
+      const fallbackCwd = process.env.HOME?.trim() || process.cwd();
+      log.warn("discovery cwd does not exist; falling back", {
+        requestedCwd: normalizedCwd,
+        fallbackCwd,
+      });
+      normalizedCwd = fallbackCwd;
+    }
     const existing = this.discoverySessions.get(normalizedCwd);
     if (existing && !existing.stopping && !existing.child.killed) {
       this.scheduleDiscoverySessionIdleStop(normalizedCwd);
@@ -2132,14 +2289,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     const now = new Date().toISOString();
+    // Mirror the thread-bound startSession path so discovery honors a configured
+    // custom Codex binary/home instead of always falling back to PATH's `codex`.
+    const codexBinaryPath = options?.binaryPath ?? "codex";
+    const codexHomePath = options?.homePath;
     await this.assertSupportedCodexCliVersion({
-      binaryPath: "codex",
+      binaryPath: codexBinaryPath,
       cwd: normalizedCwd,
+      ...(codexHomePath ? { homePath: codexHomePath } : {}),
     });
     const child = spawnCodexAppServer({
-      binaryPath: "codex",
+      binaryPath: codexBinaryPath,
       cwd: normalizedCwd,
-      env: await buildCodexProcessEnv(),
+      env: await buildCodexProcessEnv({
+        ...(codexHomePath ? { homePath: codexHomePath } : {}),
+      }),
     });
     const context: CodexSessionContext = {
       session: {
@@ -3598,7 +3762,9 @@ function normalizeProviderThreadId(value: string | undefined): string | undefine
   return brandIfNonEmpty(value, (normalized) => normalized);
 }
 
-function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
+function readCodexProviderOptions(input: {
+  readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
+}): {
   readonly binaryPath?: string;
   readonly homePath?: string;
 } {

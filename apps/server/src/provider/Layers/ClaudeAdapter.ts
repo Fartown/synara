@@ -7,6 +7,8 @@
  * @module ClaudeAdapterLive
  */
 import { spawn as spawnChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import {
   type AgentInfo,
   type CanUseTool,
@@ -138,6 +140,16 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { extractProposedPlanMarkdown, withProviderPlanModePrompt } from "../planMode.ts";
+import {
+  classifyRequestType,
+  classifyToolItemType,
+  CLAUDE_WORKER_EFFORT_TIERS,
+  extractExitPlanModePlan,
+  isClientSurfacedClaudeTool,
+  summarizeToolRequest,
+  titleForTool,
+  toolLifecycleEventData,
+} from "../claudeToolItems.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
@@ -866,172 +878,6 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
   };
 }
 
-function classifyToolItemType(toolName: string): CanonicalItemType {
-  const normalized = toolName.toLowerCase();
-  if (
-    normalized === "todowrite" ||
-    normalized.includes("todo") ||
-    normalized === "taskcreate" ||
-    normalized === "taskupdate" ||
-    normalized === "taskget" ||
-    normalized === "tasklist"
-  ) {
-    return "plan";
-  }
-  if (normalized.includes("agent")) {
-    return "collab_agent_tool_call";
-  }
-  if (
-    normalized === "task" ||
-    normalized === "agent" ||
-    normalized.includes("subagent") ||
-    normalized.includes("sub-agent")
-  ) {
-    return "collab_agent_tool_call";
-  }
-  if (
-    normalized.includes("bash") ||
-    normalized.includes("command") ||
-    normalized.includes("shell") ||
-    normalized.includes("terminal")
-  ) {
-    return "command_execution";
-  }
-  if (
-    normalized.includes("edit") ||
-    normalized.includes("write") ||
-    normalized.includes("file") ||
-    normalized.includes("patch") ||
-    normalized.includes("replace") ||
-    normalized.includes("create") ||
-    normalized.includes("delete")
-  ) {
-    return "file_change";
-  }
-  if (normalized.includes("mcp")) {
-    return "mcp_tool_call";
-  }
-  if (normalized.includes("websearch") || normalized.includes("web search")) {
-    return "web_search";
-  }
-  if (normalized.includes("image")) {
-    return "image_view";
-  }
-  return "dynamic_tool_call";
-}
-
-function isReadOnlyToolName(toolName: string): boolean {
-  const normalized = toolName.toLowerCase();
-  return (
-    normalized === "read" ||
-    normalized.includes("read file") ||
-    normalized.includes("view") ||
-    normalized.includes("grep") ||
-    normalized.includes("glob") ||
-    normalized.includes("search")
-  );
-}
-
-function classifyRequestType(toolName: string): CanonicalRequestType {
-  if (isReadOnlyToolName(toolName)) {
-    return "file_read_approval";
-  }
-  const itemType = classifyToolItemType(toolName);
-  return itemType === "command_execution"
-    ? "command_execution_approval"
-    : itemType === "file_change"
-      ? "file_change_approval"
-      : "dynamic_tool_call";
-}
-
-function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
-  const commandValue = input.command ?? input.cmd;
-  const command = typeof commandValue === "string" ? commandValue : undefined;
-  if (command && command.trim().length > 0) {
-    return `${toolName}: ${command.trim().slice(0, 400)}`;
-  }
-
-  const serialized = JSON.stringify(input);
-  if (serialized.length <= 400) {
-    return `${toolName}: ${serialized}`;
-  }
-  return `${toolName}: ${serialized.slice(0, 397)}...`;
-}
-
-// Tools whose result is surfaced through a dedicated runtime channel — AskUserQuestion
-// via the user-input request flow, ExitPlanMode via the proposed-plan flow — must NOT
-// also emit a generic tool-call lifecycle item, or the timeline shows a redundant
-// "ToolName: {json}" row alongside the real interaction surface.
-function isClientSurfacedClaudeTool(toolName: string): boolean {
-  return toolName === "AskUserQuestion" || toolName === "ExitPlanMode";
-}
-
-// Stable per-call identity stamped on every tool lifecycle event's data so the client
-// can collapse started/updated/completed (and dedupe parallel calls) by tool-call id
-// instead of relying on row adjacency. Mirrors the shape other adapters emit (Pi/Grok).
-function toolLifecycleEventData(
-  tool: Pick<ToolInFlight, "itemId" | "toolName" | "input">,
-  extra?: Record<string, unknown>,
-): Record<string, unknown> {
-  return {
-    toolCallId: tool.itemId,
-    callId: tool.itemId,
-    toolName: tool.toolName,
-    input: tool.input,
-    ...(tool.toolName === "Task" || tool.toolName === "Agent" ? subagentReceiverData(tool) : {}),
-    ...extra,
-  };
-}
-
-// Receiver identity for the shared subagent-thread machinery: ingestion spawns a
-// child thread per receiverThreadId on collab_agent_tool_call items and titles it
-// from these hints (see extractSubagentIdentityHints in @synara/shared/subagents).
-function subagentReceiverData(
-  tool: Pick<ToolInFlight, "itemId" | "input">,
-): Record<string, unknown> {
-  const {
-    subagent_type: subagentType,
-    description,
-    prompt,
-    model,
-    run_in_background: runInBackground,
-  } = tool.input;
-  const effort =
-    typeof subagentType === "string" ? claudeWorkerEffortFromSubagentType(subagentType) : undefined;
-  return {
-    receiverThreadId: tool.itemId,
-    ...(typeof subagentType === "string" ? { agentType: subagentType } : {}),
-    ...(typeof description === "string" ? { nickname: description } : {}),
-    ...(typeof prompt === "string" ? { prompt } : {}),
-    ...(typeof model === "string" ? { model } : {}),
-    ...(effort ? { effort } : {}),
-    ...(runInBackground === true ? { background: true } : {}),
-  };
-}
-
-function titleForTool(itemType: CanonicalItemType): string {
-  switch (itemType) {
-    case "plan":
-      return "Plan";
-    case "command_execution":
-      return "Command run";
-    case "file_change":
-      return "File change";
-    case "mcp_tool_call":
-      return "MCP tool call";
-    case "collab_agent_tool_call":
-      return "Subagent task";
-    case "web_search":
-      return "Web search";
-    case "image_view":
-      return "Image view";
-    case "dynamic_tool_call":
-      return "Tool call";
-    default:
-      return "Item";
-  }
-}
-
 const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -1063,15 +909,8 @@ export const buildEmbeddedClaudeSystemPromptAppend = (gatewayControlAvailable: b
     renderSynaraHarnessPolicy({ gatewayControlAvailable }),
   ].join("\n");
 
-const CLAUDE_WORKER_EFFORT_TIERS = ["low", "medium", "high", "xhigh"] as const;
 const CLAUDE_WORKER_PROMPT =
   "You are a general-purpose worker agent. Complete the assigned task end to end with the available tools, then return a concise report covering what you did, key findings, and any remaining risks.";
-
-function claudeWorkerEffortFromSubagentType(subagentType: string): string | undefined {
-  return (CLAUDE_WORKER_EFFORT_TIERS as readonly string[]).find(
-    (tier) => subagentType === `worker-${tier}`,
-  );
-}
 
 function claudeSubagentSteerContext(message: string): string {
   return `The user sent you a message mid-task: ${message}. Address it and adjust your work accordingly.`;
@@ -1375,19 +1214,6 @@ function extractTextContent(value: unknown): string {
   }
 
   return extractTextContent(record.content);
-}
-
-function extractExitPlanModePlan(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-
-  const record = value as {
-    plan?: unknown;
-  };
-  return typeof record.plan === "string" && record.plan.trim().length > 0
-    ? record.plan.trim()
-    : undefined;
 }
 
 function exitPlanCaptureKey(input: {
@@ -4659,8 +4485,23 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           threadId,
           PROVIDER,
         );
+
+        // A resumed external session can point at a directory the user has since
+        // deleted; the SDK subprocess fails on a nonexistent cwd. Session resume
+        // is id-based and the transcript store is global, so fall back to HOME.
+        let sessionCwd = input.cwd;
+        if (sessionCwd && !existsSync(sessionCwd)) {
+          const fallbackCwd = homedir();
+          yield* Effect.logWarning("claude session cwd does not exist; falling back", {
+            threadId,
+            requestedCwd: sessionCwd,
+            fallbackCwd,
+          });
+          sessionCwd = fallbackCwd;
+        }
+
         const queryOptions: ClaudeQueryOptions = {
-          ...(input.cwd ? { cwd: input.cwd } : {}),
+          ...(sessionCwd ? { cwd: sessionCwd } : {}),
           // Keep Claude context-window selection model-driven so session start
           // and in-session switches both use the same API model contract.
           ...(apiModelId ? { model: apiModelId } : {}),
